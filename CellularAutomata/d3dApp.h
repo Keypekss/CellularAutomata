@@ -49,9 +49,12 @@ protected:
     virtual void Draw(const GameTimer& gt)=0;
 
 	// Convenience overrides for handling mouse input.
-	virtual void OnMouseDown(WPARAM btnState, int x, int y){ }
-	virtual void OnMouseUp(WPARAM btnState, int x, int y)  { }
-	virtual void OnMouseMove(WPARAM btnState, int x, int y){ }
+    virtual void OnMouseDown(WPARAM btnState, int x, int y) = 0;
+	virtual void OnMouseUp(WPARAM btnState, int x, int y)   = 0;
+	virtual void OnMouseMove(WPARAM btnState, int x, int y) = 0;
+
+    // keyboard inputs
+    virtual void OnKeyUp(WPARAM button) = 0;
 
 protected:
 

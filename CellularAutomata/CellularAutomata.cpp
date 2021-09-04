@@ -11,14 +11,6 @@ using namespace DirectX;
 using namespace DirectX::PackedVector;
 using namespace DirectX::SimpleMath;
 
-struct Particle {
-	uint8_t id;
-	float life_time;
-	Vector2 velocity;
-	Color color;
-	bool has_been_updated_this_frame;
-};
-
 // material ids
 #define mat_id_empty (uint8_t)0
 #define mat_id_sand  (uint8_t)1
@@ -30,9 +22,17 @@ struct Particle {
 #define mat_col_sand  { 0.58, 0.39, 0.19, 1.0 }
 #define mat_col_water { 0.07, 0.39, 0.66, 0.78 }
 
+struct Particle {
+	uint8_t id = mat_id_empty;
+	float life_time;
+	Vector2 velocity;
+	Color color = mat_col_empty;
+	bool has_been_updated_this_frame;
+};
+
 // width and height of texture buffer (equals to screen size)
-constexpr int textureWidth = 800;
-constexpr int textureHeight = 600;
+constexpr unsigned int textureWidth = 800;
+constexpr unsigned int textureHeight = 600;
 
 enum class material_selection
 {
@@ -44,10 +44,10 @@ enum class material_selection
 material_selection selectedMaterial = material_selection::mat_sel_sand;
 
 // world particle data
-std::vector<Particle> worldData; 
+std::vector<Particle> worldData{ textureWidth * textureHeight };
 
 // color data
-std::vector<Color> colorData;
+std::vector<Color> colorData{ textureWidth * textureHeight };
 
 // gravity settings
 float gravity = 10.0f;
@@ -72,10 +72,10 @@ private:
 	void Draw(const GameTimer& gt) override;
 
 	// input handling
-	LRESULT MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) override;
 	void OnMouseDown(WPARAM btnState, int x, int y) override;
 	void OnMouseUp(WPARAM btnState, int x, int y) override;
 	void OnMouseMove(WPARAM btnState, int x, int y) override;
+	void OnKeyUp(WPARAM button) override;
 
 	Particle particle_empty();
 	Particle particle_sand();
@@ -88,8 +88,7 @@ private:
 	void update_default(uint8_t w, uint8_t h);
 
 	// Utility functions
-	void write_data(uint8_t idx, Particle);
-	Vector2 get_mouse_position();
+	void write_data(uint32_t idx, Particle);
 	int random_val(int lower, int upper);
 	int compute_idx(int x, int y);
 	bool in_bounds(int x, int y);
@@ -141,6 +140,7 @@ bool CellularAutomata::Initialize()
 {
 	if (!D3DApp::Initialize())
 		return false;
+
 
 	return true;
 }
@@ -201,42 +201,14 @@ void CellularAutomata::Draw(const GameTimer& gt)
 	FlushCommandQueue();
 }
 
-LRESULT CellularAutomata::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-	D3DApp::MsgProc(hwnd, msg, wParam, lParam);
-
-	switch (msg) {
-	case WM_KEYDOWN:
-		switch (wParam) {
-		case 0x43: // button 'c'
-			worldData.clear();
-			worldData.reserve(textureWidth * textureHeight);
-
-			colorData.clear();
-			colorData.reserve(textureWidth * textureHeight);
-			break;
-		default:
-			break;
-		}		
-
-	default:
-		break;
-	}
-
-	return LRESULT();
-}
-
 void CellularAutomata::OnMouseDown(WPARAM btnState, int x, int y)
 {
-	mLastMousePos.x = x;
-	mLastMousePos.y = y;
 
 	if (btnState == VK_LBUTTON)
-	{
-		Vector2 mp = get_mouse_position();
-		float mp_x = std::clamp(mp.x, 0.f, (float)textureWidth - 1.f);
-		float mp_y = std::clamp(mp.y, 0.f, (float)textureHeight - 1.f);
-		int max_idx = (textureWidth * textureHeight) - 1;
+	{		
+		unsigned int mp_x = std::clamp(static_cast<unsigned int>(x), 0u, textureWidth - 1);
+		unsigned int mp_y = std::clamp(static_cast<unsigned int>(y), 0u, textureHeight - 1);
+		unsigned int max_idx = (textureWidth * textureHeight) - 1;
 		unsigned int r_amt = random_val(1, 10000);
 		const float R = selectionRadius;
 
@@ -246,12 +218,12 @@ void CellularAutomata::OnMouseDown(WPARAM btnState, int x, int y)
 			float ran = (float)random_val(0, 100) / 100.f;
 			float r = R * sqrt(ran);
 			float theta = (float)random_val(0, 100) / 100.f * 2.f * MathHelper::Pi;
-			float rx = cos((float)theta) * r;
-			float ry = sin((float)theta) * r;
-			int mpx = (int)std::clamp(mp_x + (float)rx, 0.f, (float)textureWidth - 1.f);
-			int mpy = (int)std::clamp(mp_y + (float)ry, 0.f, (float)textureHeight - 1.f);
-			int idx = mpy * (int)textureWidth + mpx;
-			idx = std::clamp(idx, 0, max_idx);
+			unsigned int rx = static_cast<unsigned int>(cos(theta) * r);
+			unsigned int ry = static_cast<unsigned int>(sin(theta) * r);
+			unsigned int mpx = std::clamp(mp_x + rx, 0u, textureWidth - 1);
+			unsigned int mpy = std::clamp(mp_y + ry, 0u, textureHeight - 1);
+			unsigned int idx = mpy * textureWidth + mpx;
+			idx = std::clamp(idx, 0u, max_idx);
 
 			if (is_empty(mpx, mpy))
 			{
@@ -268,10 +240,9 @@ void CellularAutomata::OnMouseDown(WPARAM btnState, int x, int y)
 
 	// Solid Erase
 	if (btnState == VK_RBUTTON)
-	{
-		Vector2 mp = get_mouse_position();
-		float mp_x = std::clamp(mp.x, 0.f, (float)textureWidth - 1.f);
-		float mp_y = std::clamp(mp.y, 0.f, (float)textureHeight - 1.f);
+	{		
+		unsigned int mp_x = std::clamp(static_cast<unsigned int>(x), 0u, textureWidth - 1);
+		unsigned int mp_y = std::clamp(static_cast<unsigned int>(y), 0u, textureHeight - 1);
 		unsigned int max_idx = (textureWidth * textureHeight) - 1;
 		const float R = selectionRadius;
 	
@@ -280,10 +251,10 @@ void CellularAutomata::OnMouseDown(WPARAM btnState, int x, int y)
 		{
 			for (int j = -R; j < R; ++j)
 			{
-				int rx = ((int)mp_x + j);
-				int ry = ((int)mp_y + i);
+				unsigned int rx = mp_x + j;
+				unsigned int ry = mp_y + i;
 				Vector2 r = Vector2{ static_cast<float>(rx), static_cast<float>(ry) };
-	
+				Vector2 mp = Vector2{ static_cast<float>(x), static_cast<float>(y) };
 				if (in_bounds(rx, ry) && vectorDistance(mp, r) <= R) {
 					write_data(compute_idx(rx, ry), particle_empty());
 				}
@@ -301,17 +272,17 @@ void CellularAutomata::OnMouseUp(WPARAM btnState, int x, int y)
 
 void CellularAutomata::OnMouseMove(WPARAM btnState, int x, int y)
 {
-	if ((btnState & MK_LBUTTON) != 0)
-	{
-
-	}
-	else if ((btnState & MK_RBUTTON) != 0)
-	{
-
-	}
-
 	mLastMousePos.x = x;
 	mLastMousePos.y = y;
+}
+
+void CellularAutomata::OnKeyUp(WPARAM button)
+{
+	worldData.clear();
+	worldData.reserve(textureWidth * textureHeight);
+
+	colorData.clear();
+	colorData.reserve(textureWidth * textureHeight);
 }
 
 Particle CellularAutomata::particle_empty() {
@@ -605,19 +576,13 @@ void CellularAutomata::update_water(uint8_t x, uint8_t y, const GameTimer& gt) {
 	}
 }
 
-void CellularAutomata::write_data(uint8_t idx, Particle p) {
+void CellularAutomata::write_data(uint32_t idx, Particle p) {
 	// Write into particle data for id value
 	worldData.at(idx) = p;
 	colorData.at(idx) = p.color;
-}
 
-Vector2 CellularAutomata::get_mouse_position() {
-	Vector2 mousePos;
-	
-	mousePos.x = mLastMousePos.x;
-	mousePos.y = mLastMousePos.y;
-
-	return mousePos;
+	std::wstring text = L"\n Data written to : " + std::to_wstring(idx);
+	OutputDebugString(text.c_str());
 }
 
 int CellularAutomata::random_val(int lower, int upper) {
