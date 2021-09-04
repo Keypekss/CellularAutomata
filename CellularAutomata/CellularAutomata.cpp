@@ -64,14 +64,15 @@ public:
 	CellularAutomata(HINSTANCE hInstance);
 	~CellularAutomata();
 
-	virtual bool Initialize()override;
+	bool Initialize() override;
 
 private:
-	virtual void OnResize()override;
-	virtual void Update(const GameTimer& gt)override;
-	virtual void Draw(const GameTimer& gt)override;
+	void OnResize() override;
+	void Update(const GameTimer& gt) override;
+	void Draw(const GameTimer& gt) override;
 
 	// input handling
+	LRESULT MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) override;
 	void OnMouseDown(WPARAM btnState, int x, int y) override;
 	void OnMouseUp(WPARAM btnState, int x, int y) override;
 	void OnMouseMove(WPARAM btnState, int x, int y) override;
@@ -99,6 +100,7 @@ private:
 	void putpixel(int x, int y);
 	void drawCircle(int xc, int yc, int x, int y);
 	void circleBres(int xc, int yc, int r);
+	float vectorDistance(Vector2 vec1, Vector2 vec2);
 	
 	POINT mLastMousePos;
 };
@@ -199,12 +201,95 @@ void CellularAutomata::Draw(const GameTimer& gt)
 	FlushCommandQueue();
 }
 
+LRESULT CellularAutomata::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+	D3DApp::MsgProc(hwnd, msg, wParam, lParam);
+
+	switch (msg) {
+	case WM_KEYDOWN:
+		switch (wParam) {
+		case 0x43: // button 'c'
+			worldData.clear();
+			worldData.reserve(textureWidth * textureHeight);
+
+			colorData.clear();
+			colorData.reserve(textureWidth * textureHeight);
+			break;
+		default:
+			break;
+		}		
+
+	default:
+		break;
+	}
+
+	return LRESULT();
+}
+
 void CellularAutomata::OnMouseDown(WPARAM btnState, int x, int y)
 {
 	mLastMousePos.x = x;
 	mLastMousePos.y = y;
 
+	if (btnState == VK_LBUTTON)
+	{
+		Vector2 mp = get_mouse_position();
+		float mp_x = std::clamp(mp.x, 0.f, (float)textureWidth - 1.f);
+		float mp_y = std::clamp(mp.y, 0.f, (float)textureHeight - 1.f);
+		int max_idx = (textureWidth * textureHeight) - 1;
+		unsigned int r_amt = random_val(1, 10000);
+		const float R = selectionRadius;
 
+		// Spawn in a circle around the mouse
+		for (unsigned int i = 0; i < r_amt; ++i)
+		{
+			float ran = (float)random_val(0, 100) / 100.f;
+			float r = R * sqrt(ran);
+			float theta = (float)random_val(0, 100) / 100.f * 2.f * MathHelper::Pi;
+			float rx = cos((float)theta) * r;
+			float ry = sin((float)theta) * r;
+			int mpx = (int)std::clamp(mp_x + (float)rx, 0.f, (float)textureWidth - 1.f);
+			int mpy = (int)std::clamp(mp_y + (float)ry, 0.f, (float)textureHeight - 1.f);
+			int idx = mpy * (int)textureWidth + mpx;
+			idx = std::clamp(idx, 0, max_idx);
+
+			if (is_empty(mpx, mpy))
+			{
+				Particle p = { 0 };
+				switch (selectedMaterial) {
+				case material_selection::mat_sel_sand: p = particle_sand(); break;
+				case material_selection::mat_sel_water: p = particle_water(); break;
+				}
+				p.velocity = Vector2{ static_cast<float>(random_val(-1, 1)), static_cast<float>(random_val(-2, 5)) };
+				write_data(idx, p);
+			}
+		}
+	}
+
+	// Solid Erase
+	if (btnState == VK_RBUTTON)
+	{
+		Vector2 mp = get_mouse_position();
+		float mp_x = std::clamp(mp.x, 0.f, (float)textureWidth - 1.f);
+		float mp_y = std::clamp(mp.y, 0.f, (float)textureHeight - 1.f);
+		unsigned int max_idx = (textureWidth * textureHeight) - 1;
+		const float R = selectionRadius;
+	
+		// Erase in a circle pattern
+		for (int i = -R; i < R; ++i)
+		{
+			for (int j = -R; j < R; ++j)
+			{
+				int rx = ((int)mp_x + j);
+				int ry = ((int)mp_y + i);
+				Vector2 r = Vector2{ static_cast<float>(rx), static_cast<float>(ry) };
+	
+				if (in_bounds(rx, ry) && vectorDistance(mp, r) <= R) {
+					write_data(compute_idx(rx, ry), particle_empty());
+				}
+			}
+		}
+	}
 
 	SetCapture(mhMainWnd);
 }
@@ -649,4 +734,10 @@ void CellularAutomata::drawCircle(int xc, int yc, int x, int y) {
 
 void CellularAutomata::circleBres(int xc, int yc, int r) {
 
+}
+
+float CellularAutomata::vectorDistance(Vector2 vec1, Vector2 vec2) {
+	float dx = (vec1.x - vec2.x);
+	float dy = (vec1.y - vec2.y);
+	return (std::sqrt(dx * dx + dy * dy));
 }
