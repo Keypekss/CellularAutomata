@@ -86,7 +86,6 @@ private:
 	void Draw(const GameTimer& gt) override;
 
 	void BuildRootSignature();
-	void BuildDescriptorHeaps();
 	void BuildBuffers();
 	void BuildShadersAndInputLayout();
 	void BuildPSOs();
@@ -224,7 +223,7 @@ void CellularAutomata::Draw(const GameTimer& gt)
 
 	// A command list can be reset after it has been added to the command queue via ExecuteCommandList.
 	// Reusing the command list reuses memory.
-	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
+	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), mPSO.Get()));
 
 	// Indicate a state transition on the resource usage.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
@@ -257,8 +256,7 @@ void CellularAutomata::Draw(const GameTimer& gt)
 
 	CD3DX12_GPU_DESCRIPTOR_HANDLE tex(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 	mCommandList->SetGraphicsRootDescriptorTable(0, tex);
-	mCommandList->DrawIndexedInstanced(6, 1, 0, 0, 0); // first triangle of the quad
-	mCommandList->DrawIndexedInstanced(6, 1, 0, 4, 0); // second triangle of the quad
+	mCommandList->DrawIndexedInstanced(6, 1, 0, 0, 0);
 
 	// Indicate a state transition on the resource usage.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
@@ -318,11 +316,6 @@ void CellularAutomata::BuildRootSignature()
 		serializedRootSig->GetBufferPointer(),
 		serializedRootSig->GetBufferSize(),
 		IID_PPV_ARGS(mRootSignature.GetAddressOf())));
-}
-
-void CellularAutomata::BuildDescriptorHeaps()
-{
-
 }
 
 void CellularAutomata::BuildBuffers()
@@ -402,7 +395,7 @@ void CellularAutomata::BuildPSOs()
 	psoDesc.SampleMask = UINT_MAX;
 	psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 	psoDesc.NumRenderTargets = 1;
-	psoDesc.RTVFormats[0] = mBackBufferFormat;
+	psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
 	psoDesc.SampleDesc.Count = m4xMsaaState ? 4 : 1;
 	psoDesc.SampleDesc.Quality = m4xMsaaState ? (m4xMsaaQuality - 1) : 0;
 	psoDesc.DSVFormat = mDepthStencilFormat;
@@ -920,7 +913,7 @@ void CellularAutomata::UploadToTexture()
 	// Describe and create a Texture2D.
 	D3D12_RESOURCE_DESC textureDesc = {};
 	textureDesc.MipLevels = 1;
-	textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UINT;
+	textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 	textureDesc.Width = textureWidth;
 	textureDesc.Height = textureHeight;
 	textureDesc.Flags = D3D12_RESOURCE_FLAG_NONE;

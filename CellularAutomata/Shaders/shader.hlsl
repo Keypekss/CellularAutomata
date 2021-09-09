@@ -25,7 +25,7 @@ SamplerState samPoint : register(s0);
 
 float4 PS(VertexOut pin) : SV_Target
 {
-    float4 color = tex.Sample(samPoint, pin.TexC) / 255;
+    float4 color = tex.Sample(samPoint, pin.TexC);
     
     return color;
 }
