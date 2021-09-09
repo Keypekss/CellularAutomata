@@ -271,6 +271,7 @@ void D3DApp::OnResize()
  
 LRESULT D3DApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+	std::wstring text = L"\n LMB pressed.";
 	switch( msg )
 	{
 	// WM_ACTIVATE is sent when the window is activated or deactivated.  
@@ -382,36 +383,25 @@ LRESULT D3DApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	case WM_LBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 	case WM_RBUTTONDOWN:
+		SetCapture(mhMainWnd);
+		OutputDebugString(text.c_str());
 		OnMouseDown(wParam, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
 		return 0;
 	case WM_LBUTTONUP:
 	case WM_MBUTTONUP:
-	case WM_RBUTTONUP:
+	case WM_RBUTTONUP: 		
 		OnMouseUp(wParam, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+		ReleaseCapture();
 		return 0;
 	case WM_MOUSEMOVE:
+		OnMouseDown(wParam, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
 		OnMouseMove(wParam, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
 		return 0;
     case WM_KEYUP:
 	{
-		switch (wParam)
-		{
-		case VK_ESCAPE:
-			PostQuitMessage(0);
-			break;
-		case VK_F2:
-			Set4xMsaaState(!m4xMsaaState);
-			break;
-		case 0x43: // 'C' button
-			OnKeyUp(wParam);
-			break;
-		default:
-			break;
-		}
-
-	}
-
-        return 0;
+		OnKeyUp(wParam);
+		return 0;
+	}        
 	}
 
 	return DefWindowProc(hwnd, msg, wParam, lParam);

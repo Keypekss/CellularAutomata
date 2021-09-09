@@ -15,12 +15,14 @@ using namespace DirectX::SimpleMath;
 #define mat_id_empty (uint8_t)0
 #define mat_id_sand  (uint8_t)1
 #define mat_id_water (uint8_t)2
+#define mat_id_stone (uint8_t)3
 
 // material colors
 // Colors
 #define mat_col_empty { 0, 0, 0, 0}
 #define mat_col_sand  { 150, 100, 50, 255 }
 #define mat_col_water { 20, 100, 170, 200 }
+#define mat_col_stone { 128, 128, 128, 200 }
 
 struct Color32 {
 	uint8_t r;
@@ -49,7 +51,8 @@ constexpr unsigned int textureHeight = 600;
 enum class material_selection
 {
 	mat_sel_sand = 0,
-	mat_sel_water	
+	mat_sel_water,
+	mat_sel_stone
 };
 
 // selected material (by default, it's sand)
@@ -76,9 +79,7 @@ public:
 	CellularAutomata(HINSTANCE hInstance);
 	~CellularAutomata();
 
-	bool Initialize() override;
-
-	
+	bool Initialize() override;	
 
 private:
 	void OnResize() override;
@@ -99,6 +100,8 @@ private:
 	Particle particle_empty();
 	Particle particle_sand();
 	Particle particle_water();
+	Particle particle_stone();
+
 
 	// particle updates
 	void update_particle_sim(const GameTimer& gt);
@@ -107,6 +110,9 @@ private:
 	void update_default(uint32_t w, uint32_t h);
 
 	// Utility functions
+	void ShowControls();
+	void ClearScreen();
+	void SelectMaterial(WPARAM button);
 	void write_data(uint32_t idx, Particle);
 	int random_val(int lower, int upper);
 	int compute_idx(int x, int y);
@@ -191,6 +197,7 @@ bool CellularAutomata::Initialize()
 	BuildShadersAndInputLayout();
 	BuildPSOs();
 	BuildBuffers();
+	ShowControls();
 
 	// Execute the initialization commands.
 	ThrowIfFailed(mCommandList->Close());
@@ -404,7 +411,7 @@ void CellularAutomata::BuildPSOs()
 
 void CellularAutomata::OnMouseDown(WPARAM btnState, int x, int y)
 {
-
+	
 	if (btnState == VK_LBUTTON)
 	{		
 		unsigned int mp_x = std::clamp(static_cast<unsigned int>(x), 0u, textureWidth - 1);
@@ -432,6 +439,8 @@ void CellularAutomata::OnMouseDown(WPARAM btnState, int x, int y)
 				switch (selectedMaterial) {
 				case material_selection::mat_sel_sand: p = particle_sand(); break;
 				case material_selection::mat_sel_water: p = particle_water(); break;
+				case material_selection::mat_sel_stone: p = particle_stone(); break;
+					
 				}
 				p.velocity = Vector2{ static_cast<float>(random_val(-1, 1)), static_cast<float>(random_val(-2, 5)) };
 				write_data(idx, p);
@@ -462,13 +471,11 @@ void CellularAutomata::OnMouseDown(WPARAM btnState, int x, int y)
 			}
 		}
 	}
-
-	SetCapture(mhMainWnd);
 }
 
 void CellularAutomata::OnMouseUp(WPARAM btnState, int x, int y)
 {
-	ReleaseCapture();
+	
 }
 
 void CellularAutomata::OnMouseMove(WPARAM btnState, int x, int y)
@@ -479,11 +486,18 @@ void CellularAutomata::OnMouseMove(WPARAM btnState, int x, int y)
 
 void CellularAutomata::OnKeyUp(WPARAM button)
 {
-	worldData.clear();
-	worldData.reserve(textureWidth * textureHeight);
-
-	colorData.clear();
-	colorData.reserve(textureWidth * textureHeight);
+	switch (button)
+	{
+		case VK_ESCAPE:
+			PostQuitMessage(0);
+			break;
+		case 0x43: // 'C' button
+			ClearScreen();
+			break;
+		default:
+			break;
+	}
+	SelectMaterial(button);
 }
 
 Particle CellularAutomata::particle_empty() {
@@ -510,6 +524,18 @@ Particle CellularAutomata::particle_water() {
 	p.color.r = 25;
 	p.color.g = 76;
 	p.color.b = 178;
+	p.color.a = 255;
+	return p;
+}
+
+Particle CellularAutomata::particle_stone()
+{
+	Particle p = { 0 };
+	p.id = mat_id_stone;
+	float r = (float)(random_val(0, 1)) / 2.f;
+	p.color.r = 128;
+	p.color.g = 128;
+	p.color.b = 128;
 	p.color.a = 255;
 	return p;
 }
@@ -565,6 +591,43 @@ void CellularAutomata::update_particle_sim(const GameTimer& gt)
 void CellularAutomata::update_default(uint32_t w, uint32_t h) {
 	uint8_t read_idx = compute_idx(w, h);
 	write_data(read_idx, get_particle_at(w, h));
+}
+
+void CellularAutomata::ShowControls()
+{
+	std::wstring controls = L"Controls:\n"
+		"Press Left Mouse Button to put particles \n"
+		"Press Right Mouse Button to delete particles\n"
+		"Press 1 to select particle 'sand'\n"
+		"Press 2 to select particle 'water'\n"
+		"Press 3 to select particle 'stone'\n";
+	MessageBox(nullptr, controls.c_str(), L"Controls", MB_OK);
+}
+
+void CellularAutomata::ClearScreen()
+{
+	std::vector<Particle> tempData{ textureWidth * textureHeight }; // construct a new scene with default data
+	worldData.assign(tempData.begin(), tempData.end()); // overwrite existing data
+
+	std::vector<Color32> tempColor{ textureWidth * textureHeight, Color32(0, 0, 0, 0) };
+	colorData.assign(tempColor.begin(), tempColor.end());
+}
+
+void CellularAutomata::SelectMaterial(WPARAM button)
+{
+	switch (button) {
+	case 0x31: // button '1' pressed
+		selectedMaterial = material_selection::mat_sel_sand;
+		break;
+	case 0x32: // button '2' pressed
+		selectedMaterial = material_selection::mat_sel_water;
+		break;
+	case 0x33: // button '3' pressed
+		selectedMaterial = material_selection::mat_sel_stone;
+		break;
+	}
+	
+
 }
 
 void CellularAutomata::update_sand(uint32_t x, uint32_t y, const GameTimer& gt) {
@@ -810,7 +873,6 @@ bool CellularAutomata::is_empty(int x, int y) {
 
 Particle CellularAutomata::get_particle_at(int x, int y) {
 	return worldData.at(compute_idx(x, y));
-
 }
 
 bool CellularAutomata::completely_surrounded(int x, int y) {
@@ -895,7 +957,7 @@ void CellularAutomata::putpixel(int x, int y) {
 }
 
 void CellularAutomata::drawCircle(int xc, int yc, int x, int y) {
-
+	// draw a circle around mouse that indicates where particles will spawn
 }
 
 void CellularAutomata::circleBres(int xc, int yc, int r) {
