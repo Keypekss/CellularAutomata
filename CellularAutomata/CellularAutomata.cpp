@@ -18,15 +18,27 @@ using namespace DirectX::SimpleMath;
 
 // material colors
 // Colors
-#define mat_col_empty { 0.0, 0.0, 0.0, 0.0}
-#define mat_col_sand  { 0.58, 0.39, 0.19, 1.0 }
-#define mat_col_water { 0.07, 0.39, 0.66, 0.78 }
+#define mat_col_empty { 0, 0, 0, 0}
+#define mat_col_sand  { 150, 100, 50, 255 }
+#define mat_col_water { 20, 100, 170, 200 }
+
+struct Color32 {
+	uint8_t r;
+	uint8_t g;
+	uint8_t b;
+	uint8_t a;
+
+	Color32(uint8_t x, uint8_t y, uint8_t z, uint8_t w)
+		: r(x), g(y), b(z), a(w)
+	{
+	}
+};
 
 struct Particle {
 	uint8_t id = mat_id_empty;
 	float life_time;
 	Vector2 velocity;
-	Color color = mat_col_empty;
+	Color32 color = mat_col_empty;
 	bool has_been_updated_this_frame;
 };
 
@@ -47,7 +59,7 @@ material_selection selectedMaterial = material_selection::mat_sel_sand;
 std::vector<Particle> worldData{ textureWidth * textureHeight };
 
 // color data
-std::vector<Color> colorData{ textureWidth * textureHeight };
+std::vector<Color32> colorData{ textureWidth * textureHeight, Color32(0, 0, 0, 0) };
 
 // gravity settings
 float gravity = 10.0f;
@@ -66,10 +78,18 @@ public:
 
 	bool Initialize() override;
 
+	
+
 private:
 	void OnResize() override;
 	void Update(const GameTimer& gt) override;
 	void Draw(const GameTimer& gt) override;
+
+	void BuildRootSignature();
+	void BuildDescriptorHeaps();
+	void BuildBuffers();
+	void BuildShadersAndInputLayout();
+	void BuildPSOs();
 
 	// input handling
 	void OnMouseDown(WPARAM btnState, int x, int y) override;
@@ -83,9 +103,9 @@ private:
 
 	// particle updates
 	void update_particle_sim(const GameTimer& gt);
-	void update_sand(uint8_t x, uint8_t y, const GameTimer& gt);
-	void update_water(uint8_t x, uint8_t y, const GameTimer& gt);
-	void update_default(uint8_t w, uint8_t h);
+	void update_sand(uint32_t x, uint32_t y, const GameTimer& gt);
+	void update_water(uint32_t x, uint32_t y, const GameTimer& gt);
+	void update_default(uint32_t w, uint32_t h);
 
 	// Utility functions
 	void write_data(uint32_t idx, Particle);
@@ -100,7 +120,31 @@ private:
 	void drawCircle(int xc, int yc, int x, int y);
 	void circleBres(int xc, int yc, int r);
 	float vectorDistance(Vector2 vec1, Vector2 vec2);
-	
+	void UploadToTexture();
+
+	// texture related
+	ComPtr<ID3D12Resource> mTexture = nullptr;
+	ComPtr<ID3D12Resource> mTextureBufferUploader = nullptr;
+	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
+	ComPtr<ID3D12Resource> textureUploadHeap = nullptr;
+
+	ComPtr<ID3DBlob> VertexBufferCPU = nullptr;
+	ComPtr<ID3DBlob> IndexBufferCPU = nullptr;
+
+	ComPtr<ID3D12Resource> VertexBufferGPU = nullptr;
+	ComPtr<ID3D12Resource> IndexBufferGPU = nullptr;
+
+	ComPtr<ID3D12Resource> VertexBufferUploader = nullptr;
+	ComPtr<ID3D12Resource> IndexBufferUploader = nullptr;
+
+	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
+	ComPtr <ID3DBlob> mVertexShader = nullptr;
+	ComPtr <ID3DBlob> mPixelShader = nullptr;
+	ComPtr<ID3D12PipelineState> mPSO = nullptr;
+	std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;	
+	D3D12_VERTEX_BUFFER_VIEW mVertexBufferView;
+	D3D12_INDEX_BUFFER_VIEW mIndexBufferView;
+
 	POINT mLastMousePos;
 };
 
@@ -141,6 +185,21 @@ bool CellularAutomata::Initialize()
 	if (!D3DApp::Initialize())
 		return false;
 
+	// Reset the command list to prep for initialization commands.
+	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
+
+	BuildRootSignature();
+	BuildShadersAndInputLayout();
+	BuildPSOs();
+	BuildBuffers();
+
+	// Execute the initialization commands.
+	ThrowIfFailed(mCommandList->Close());
+	ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
+	mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
+
+	// Wait until initialization is complete.
+	FlushCommandQueue();
 
 	return true;
 }
@@ -153,6 +212,8 @@ void CellularAutomata::OnResize()
 void CellularAutomata::Update(const GameTimer& gt)
 {
 	frameCounter = (frameCounter + 1) % UINT_MAX;
+
+	update_particle_sim(gt);
 }
 
 void CellularAutomata::Draw(const GameTimer& gt)
@@ -174,11 +235,30 @@ void CellularAutomata::Draw(const GameTimer& gt)
 	mCommandList->RSSetScissorRects(1, &mScissorRect);
 
 	// Clear the back buffer and depth buffer.
-	mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::LightSteelBlue, 0, nullptr);
+	mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::LightBlue, 0, nullptr);
 	mCommandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
 	// Specify the buffers we are going to render to.
 	mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
+
+	// set root signature
+	mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+
+	// upload color data to the texture
+	UploadToTexture();
+
+	// draw color buffer
+	mCommandList->IASetVertexBuffers(0, 1, &mVertexBufferView);
+	mCommandList->IASetIndexBuffer(&mIndexBufferView);
+	mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);	
+
+	ID3D12DescriptorHeap* descriptorHeaps[] = { mSrvDescriptorHeap.Get() };
+	mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
+
+	CD3DX12_GPU_DESCRIPTOR_HANDLE tex(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+	mCommandList->SetGraphicsRootDescriptorTable(0, tex);
+	mCommandList->DrawIndexedInstanced(6, 1, 0, 0, 0); // first triangle of the quad
+	mCommandList->DrawIndexedInstanced(6, 1, 0, 4, 0); // second triangle of the quad
 
 	// Indicate a state transition on the resource usage.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
@@ -199,6 +279,134 @@ void CellularAutomata::Draw(const GameTimer& gt)
 	// done for simplicity.  Later we will show how to organize our rendering code
 	// so we do not have to wait per frame.
 	FlushCommandQueue();
+}
+
+void CellularAutomata::BuildRootSignature()
+{
+	CD3DX12_DESCRIPTOR_RANGE texTable;
+	texTable.Init(
+		D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+		1,  // number of descriptors
+		0); // register t0
+
+	CD3DX12_ROOT_PARAMETER slotRootParameter[1];
+	slotRootParameter[0].InitAsDescriptorTable(1, &texTable, D3D12_SHADER_VISIBILITY_PIXEL);
+
+	const CD3DX12_STATIC_SAMPLER_DESC pointClamp(
+		0, // shaderRegister
+		D3D12_FILTER_MIN_MAG_MIP_POINT, // filter
+		D3D12_TEXTURE_ADDRESS_MODE_BORDER,  // addressU
+		D3D12_TEXTURE_ADDRESS_MODE_BORDER,  // addressV
+		D3D12_TEXTURE_ADDRESS_MODE_BORDER); // addressW
+
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(1, slotRootParameter, 1, &pointClamp,
+		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+	// create a root signature with a single slot which points to a descriptor range consisting of a single constant buffer
+	ComPtr<ID3DBlob> serializedRootSig = nullptr;
+	ComPtr<ID3DBlob> errorBlob = nullptr;
+	HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+		serializedRootSig.GetAddressOf(), errorBlob.GetAddressOf());
+
+	if (errorBlob != nullptr)
+		::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+
+	ThrowIfFailed(hr);
+
+	ThrowIfFailed(md3dDevice->CreateRootSignature(
+		0,
+		serializedRootSig->GetBufferPointer(),
+		serializedRootSig->GetBufferSize(),
+		IID_PPV_ARGS(mRootSignature.GetAddressOf())));
+}
+
+void CellularAutomata::BuildDescriptorHeaps()
+{
+
+}
+
+void CellularAutomata::BuildBuffers()
+{
+	struct Vertex
+	{
+		XMFLOAT3 Pos;
+		XMFLOAT2 TexC;
+	};
+
+	Vertex vertices[] = {
+		{ { -1.0f, -1.0f , 0.0f}, { 0.0f, 1.0f } },
+		{ {  1.0f, -1.0f , 0.0f}, { 1.0f, 1.0f } },
+		{ { -1.0f,  1.0f , 0.0f}, { 0.0f, 0.0f } },
+		{ {  1.0f,  1.0f , 0.0f}, { 1.0f, 0.0f } }
+	};		
+
+	// set indices
+	uint16_t indices[] =	{
+		0, 2, 1,
+		1, 2, 3
+	};
+
+	// sizes of buffers in terms of bytes
+	const UINT vbByteSize = sizeof(vertices);
+	const UINT ibByteSize = sizeof(indices);
+
+	ThrowIfFailed(D3DCreateBlob(vbByteSize, &VertexBufferCPU));
+	CopyMemory(VertexBufferCPU->GetBufferPointer(), &vertices, vbByteSize);
+
+	ThrowIfFailed(D3DCreateBlob(ibByteSize, &IndexBufferCPU));
+	CopyMemory(IndexBufferCPU->GetBufferPointer(), &indices, ibByteSize);
+
+	// send buffers to the gpu
+	VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+		mCommandList.Get(), &vertices, vbByteSize, VertexBufferUploader);
+
+	IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+		mCommandList.Get(), &indices, ibByteSize, IndexBufferUploader);
+
+	// set vertex buffer view
+	mVertexBufferView.BufferLocation = VertexBufferGPU->GetGPUVirtualAddress();
+	mVertexBufferView.StrideInBytes = sizeof(Vertex);
+	mVertexBufferView.SizeInBytes = vbByteSize;
+
+	// set index buffer view
+	mIndexBufferView.BufferLocation = IndexBufferGPU->GetGPUVirtualAddress();
+	mIndexBufferView.Format = DXGI_FORMAT_R16_UINT;
+	mIndexBufferView.SizeInBytes = ibByteSize;
+}
+
+void CellularAutomata::BuildShadersAndInputLayout()
+{
+	mVertexShader = d3dUtil::CompileShader(L"Shaders\\shader.hlsl", nullptr, "VS", "vs_5_0");
+	mPixelShader = d3dUtil::CompileShader(L"Shaders\\shader.hlsl", nullptr, "PS", "ps_5_0");
+
+	mInputLayout =
+	{
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	};
+}
+
+void CellularAutomata::BuildPSOs()
+{
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc;
+
+	// PSO for opaque objects.
+	ZeroMemory(&psoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
+	psoDesc.InputLayout = { mInputLayout.data(), (UINT)mInputLayout.size() };
+	psoDesc.pRootSignature = mRootSignature.Get();
+	psoDesc.VS = CD3DX12_SHADER_BYTECODE(mVertexShader.Get());
+	psoDesc.PS = CD3DX12_SHADER_BYTECODE(mPixelShader.Get());
+	psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+	psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+	psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+	psoDesc.SampleMask = UINT_MAX;
+	psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	psoDesc.NumRenderTargets = 1;
+	psoDesc.RTVFormats[0] = mBackBufferFormat;
+	psoDesc.SampleDesc.Count = m4xMsaaState ? 4 : 1;
+	psoDesc.SampleDesc.Quality = m4xMsaaState ? (m4xMsaaQuality - 1) : 0;
+	psoDesc.DSVFormat = mDepthStencilFormat;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPSO)));
 }
 
 void CellularAutomata::OnMouseDown(WPARAM btnState, int x, int y)
@@ -296,22 +504,20 @@ Particle CellularAutomata::particle_sand() {
 	Particle p = { 0 };
 	p.id = mat_id_sand;
 	// Random sand color
-	float r = (float)(random_val(0, 10)) / 10.f;
-	p.color.x = (0.8f, 1.f, r);
-	p.color.y = (0.5f, 0.6f, r);
-	p.color.z = (0.2f, 0.25f, r);
-	p.color.w = 255;
+	p.color.r = 204;
+	p.color.g = 127;
+	p.color.b = 51;
+	p.color.a = 255;
 	return p;
 }
 
 Particle CellularAutomata::particle_water() {
 	Particle p = { 0 };
 	p.id = mat_id_water;
-	float r = (float)(random_val(0, 1)) / 2.f;
-	p.color.x = (0.1f, 0.15f, r);
-	p.color.y = (0.3f, 0.35f, r);
-	p.color.z = (0.7f, 0.8f, r);
-	p.color.w = 255;
+	p.color.r = 25;
+	p.color.g = 76;
+	p.color.b = 178;
+	p.color.a = 255;
 	return p;
 }
 
@@ -363,12 +569,12 @@ void CellularAutomata::update_particle_sim(const GameTimer& gt)
 	}
 }
 
-void CellularAutomata::update_default(uint8_t w, uint8_t h) {
+void CellularAutomata::update_default(uint32_t w, uint32_t h) {
 	uint8_t read_idx = compute_idx(w, h);
 	write_data(read_idx, get_particle_at(w, h));
 }
 
-void CellularAutomata::update_sand(uint8_t x, uint8_t y, const GameTimer& gt) {
+void CellularAutomata::update_sand(uint32_t x, uint32_t y, const GameTimer& gt) {
 	float dt = gt.DeltaTime();
 
 	// For water, same as sand, but we'll check immediate left and right as well
@@ -457,7 +663,7 @@ void CellularAutomata::update_sand(uint8_t x, uint8_t y, const GameTimer& gt) {
 	}
 }
 
-void CellularAutomata::update_water(uint8_t x, uint8_t y, const GameTimer& gt) {
+void CellularAutomata::update_water(uint32_t x, uint32_t y, const GameTimer& gt) {
 	float dt = gt.DeltaTime();
 
 	unsigned int read_idx = compute_idx(x, y);
@@ -479,9 +685,9 @@ void CellularAutomata::update_water(uint8_t x, uint8_t y, const GameTimer& gt) {
 	// Change color depending on pressure? Pressure would dictate how "deep" the water is, I suppose.
 	if (random_val(0, (int)(p->life_time * 100.f)) % 20 == 0) {
 		float r = (float)(random_val(0, 1)) / 2.f;
-		p->color.x = (0.1f, 0.15f, r);
-		p->color.y = (0.3f, 0.35f, r);
-		p->color.z = (0.7f, 0.8f, r);
+		p->color.r = 25;
+		p->color.g = 76;
+		p->color.b = 178;
 	}
 
 	int ran = random_val(0, 1);
@@ -581,8 +787,10 @@ void CellularAutomata::write_data(uint32_t idx, Particle p) {
 	worldData.at(idx) = p;
 	colorData.at(idx) = p.color;
 
-	std::wstring text = L"\n Data written to : " + std::to_wstring(idx);
-	OutputDebugString(text.c_str());
+// 	for (const auto& p : worldData) {
+// 		std::wstring text = L"\n Data written to : " + std::to_wstring(p.id);
+// 		OutputDebugString(text.c_str());
+// 	}	
 }
 
 int CellularAutomata::random_val(int lower, int upper) {
@@ -705,4 +913,60 @@ float CellularAutomata::vectorDistance(Vector2 vec1, Vector2 vec2) {
 	float dx = (vec1.x - vec2.x);
 	float dy = (vec1.y - vec2.y);
 	return (std::sqrt(dx * dx + dy * dy));
+}
+
+void CellularAutomata::UploadToTexture()
+{
+	// Describe and create a Texture2D.
+	D3D12_RESOURCE_DESC textureDesc = {};
+	textureDesc.MipLevels = 1;
+	textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UINT;
+	textureDesc.Width = textureWidth;
+	textureDesc.Height = textureHeight;
+	textureDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+	textureDesc.DepthOrArraySize = 1;
+	textureDesc.SampleDesc.Count = 1;
+	textureDesc.SampleDesc.Quality = 0;
+	textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+
+	ThrowIfFailed(md3dDevice->CreateCommittedResource(
+		&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+		D3D12_HEAP_FLAG_NONE,
+		&textureDesc,
+		D3D12_RESOURCE_STATE_COPY_DEST,
+		nullptr,
+		IID_PPV_ARGS(&mTexture)));
+
+	const UINT64 uploadBufferSize = GetRequiredIntermediateSize(mTexture.Get(), 0, 1);
+
+	// Create the GPU upload buffer.
+	ThrowIfFailed(md3dDevice->CreateCommittedResource(
+		&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+		D3D12_HEAP_FLAG_NONE,
+		&CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize),
+		D3D12_RESOURCE_STATE_GENERIC_READ,
+		nullptr,
+		IID_PPV_ARGS(&textureUploadHeap)));
+
+	D3D12_SUBRESOURCE_DATA textureData = {};
+	textureData.pData = colorData.data();
+	textureData.RowPitch = textureWidth * (sizeof(Color32));
+	textureData.SlicePitch = textureData.RowPitch * textureHeight;
+
+	UpdateSubresources(mCommandList.Get(), mTexture.Get(), textureUploadHeap.Get(), 0, 0, 1, &textureData);
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+
+	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
+	srvHeapDesc.NumDescriptors = 1;
+	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
+
+	// Describe and create a SRV for the texture.
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.Format = textureDesc.Format;
+	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Texture2D.MipLevels = 1;
+	md3dDevice->CreateShaderResourceView(mTexture.Get(), &srvDesc, mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
 }
