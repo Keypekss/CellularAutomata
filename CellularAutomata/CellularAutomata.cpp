@@ -1,10 +1,9 @@
 #include <initguid.h>
 #include "d3dApp.h"
 #include "MathHelper.h"
-#include "UploadBuffer.h"
-#include "FrameResource.h"
 #include <SimpleMath.h>
 #include <algorithm>
+#include <random>
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -68,10 +67,10 @@ enum class material_selection
 material_selection selectedMaterial = material_selection::mat_sel_sand;
 
 // world particle data
-std::vector<Particle> worldData{ textureWidth * textureHeight };
+std::vector<Particle> WorldData{ textureWidth * textureHeight };
 
 // color data
-std::vector<Color32> colorData{ textureWidth * textureHeight, Color32(0, 0, 0, 0) };
+std::vector<Color32> ColorData{ textureWidth * textureHeight, Color32(0, 0, 0, 0) };
 
 // gravity settings
 float gravity = 10.0f;
@@ -106,43 +105,40 @@ private:
 	void OnMouseMove(WPARAM btnState, int x, int y) override;
 	void OnKeyUp(WPARAM button) override;
 
-	Particle particle_empty();
-	Particle particle_sand();
-	Particle particle_water();
-	Particle particle_stone();
-	Particle particle_fire();
-	Particle particle_smoke();
-	Particle particle_steam();
+	// particle definitions
+	inline Particle ParticleEmpty();
+	inline Particle ParticleSand();
+	inline Particle ParticleWater();
+	inline Particle ParticleStone();
+	inline Particle ParticleFire();
+	inline Particle ParticleSmoke();
+	inline Particle ParticleSteam();
 
 	// particle updates
-	void update_particle_sim(const GameTimer& gt);
-	void update_sand(uint32_t x, uint32_t y, const GameTimer& gt);
-	void update_water(uint32_t x, uint32_t y, const GameTimer& gt);
-	void update_fire(uint32_t x, uint32_t y, const GameTimer& gt);
-	void update_smoke(uint32_t x, uint32_t y, const GameTimer& gt);
-	void update_steam(uint32_t x, uint32_t y, const GameTimer& gt);
-	void update_default(uint32_t w, uint32_t h);
+	void UpdateParticleSim(const GameTimer& gt);
+	void UpdateSand(uint32_t x, uint32_t y, const GameTimer& gt);
+	void UpdateWater(uint32_t x, uint32_t y, const GameTimer& gt);
+	void UpdateFire(uint32_t x, uint32_t y, const GameTimer& gt);
+	void UpdateSmoke(uint32_t x, uint32_t y, const GameTimer& gt);
+	void UpdateSteam(uint32_t x, uint32_t y, const GameTimer& gt);
 
 	// Utility functions
 	void ShowControls();
 	void ClearScreen();
 	void SelectMaterial(WPARAM button);
-	void write_data(uint32_t idx, Particle);
-	int random_val(int lower, int upper);
-	int compute_idx(int x, int y);
-	bool in_bounds(int x, int y);
-	bool is_empty(int x, int y);
-	Particle get_particle_at(int x, int y);
-	bool completely_surrounded(int x, int y);
-	bool is_in_water(int x, int y, int* lx, int* ly);
-	void putpixel(int x, int y);
-	void drawCircle(int xc, int yc, int x, int y);
-	void circleBres(int xc, int yc, int r);
-	float vectorDistance(Vector2 vec1, Vector2 vec2);
+	void WriteData(uint32_t idx, Particle);
+	inline int RandomVal(int lower, int upper);
+	inline int ComputeID(int x, int y);
+	bool InBounds(int x, int y);
+	bool IsEmpty(int x, int y);
+	Particle GetParticleAt(int x, int y);
+	bool CompletelySurrounded(int x, int y);
+	bool IsInWater(int x, int y, int* lx, int* ly);
+	inline float VectorDistance(Vector2 vec1, Vector2 vec2);
 	void UploadToTexture();
 
 	// texture related
-	ComPtr<ID3D12Resource> mTexture = nullptr;
+	ComPtr<ID3D12Resource> mTexture[SwapChainBufferCount]{};
 	ComPtr<ID3D12Resource> mTextureBufferUploader = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
 	ComPtr<ID3D12Resource> textureUploadHeap = nullptr;
@@ -205,7 +201,7 @@ bool CellularAutomata::Initialize()
 		return false;
 
 	// Reset the command list to prep for initialization commands.
-	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
+	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc[mFrameIndex].Get(), nullptr));
 
 	BuildRootSignature();
 	BuildShadersAndInputLayout();
@@ -233,18 +229,18 @@ void CellularAutomata::Update(const GameTimer& gt)
 {
 	frameCounter = (frameCounter + 1) % UINT_MAX;
 
-	update_particle_sim(gt);
+	UpdateParticleSim(gt);
 }
 
 void CellularAutomata::Draw(const GameTimer& gt)
 {
 	// Reuse the memory associated with command recording.
 	// We can only reset when the associated command lists have finished execution on the GPU.
-	ThrowIfFailed(mDirectCmdListAlloc->Reset());
+	ThrowIfFailed(mDirectCmdListAlloc[mFrameIndex]->Reset());
 
 	// A command list can be reset after it has been added to the command queue via ExecuteCommandList.
 	// Reusing the command list reuses memory.
-	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), mPSO.Get()));
+	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc[mFrameIndex].Get(), mPSO.Get()));
 
 	// Indicate a state transition on the resource usage.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
@@ -294,10 +290,7 @@ void CellularAutomata::Draw(const GameTimer& gt)
 	ThrowIfFailed(mSwapChain->Present(0, 0));
 	mCurrBackBuffer = (mCurrBackBuffer + 1) % SwapChainBufferCount;
 
-	// Wait until frame commands are complete.  This waiting is inefficient and is
-	// done for simplicity.  Later we will show how to organize our rendering code
-	// so we do not have to wait per frame.
-	FlushCommandQueue();
+	MoveToNextFrame();
 }
 
 void CellularAutomata::BuildRootSignature()
@@ -431,15 +424,15 @@ void CellularAutomata::OnMouseDown(WPARAM btnState, int x, int y)
 		unsigned int mp_x = std::clamp(static_cast<unsigned int>(x), 0u, textureWidth - 1);
 		unsigned int mp_y = std::clamp(static_cast<unsigned int>(y), 0u, textureHeight - 1);
 		unsigned int max_idx = (textureWidth * textureHeight) - 1;
-		unsigned int r_amt = random_val(1, 10000);
+		unsigned int r_amt = RandomVal(1, 10000);
 		const float R = selectionRadius;
 
 		// Spawn in a circle around the mouse
 		for (unsigned int i = 0; i < r_amt; ++i)
 		{
-			float ran = (float)random_val(0, 100) / 100.f;
+			float ran = (float)RandomVal(0, 100) / 100.f;
 			float r = R * sqrt(ran);
-			float theta = (float)random_val(0, 100) / 100.f * 2.f * MathHelper::Pi;
+			float theta = (float)RandomVal(0, 100) / 100.f * 2.f * MathHelper::Pi;
 			unsigned int rx = static_cast<unsigned int>(cos(theta) * r);
 			unsigned int ry = static_cast<unsigned int>(sin(theta) * r);
 			unsigned int mpx = std::clamp(mp_x + rx, 0u, textureWidth - 1);
@@ -447,19 +440,19 @@ void CellularAutomata::OnMouseDown(WPARAM btnState, int x, int y)
 			unsigned int idx = mpy * textureWidth + mpx;
 			idx = std::clamp(idx, 0u, max_idx);
 
-			if (is_empty(mpx, mpy))
+			if (IsEmpty(mpx, mpy))
 			{
 				Particle p = { 0 };
 				switch (selectedMaterial) {
-				case material_selection::mat_sel_sand: p = particle_sand(); break;
-				case material_selection::mat_sel_water: p = particle_water(); break;
-				case material_selection::mat_sel_stone: p = particle_stone(); break;
-				case material_selection::mat_sel_fire: p = particle_fire(); break;
-				case material_selection::mat_sel_smoke: p = particle_smoke(); break;
-				case material_selection::mat_sel_steam: p = particle_steam(); break;					
+				case material_selection::mat_sel_sand: p = ParticleSand(); break;
+				case material_selection::mat_sel_water: p = ParticleWater(); break;
+				case material_selection::mat_sel_stone: p = ParticleStone(); break;
+				case material_selection::mat_sel_fire: p = ParticleFire(); break;
+				case material_selection::mat_sel_smoke: p = ParticleSmoke(); break;
+				case material_selection::mat_sel_steam: p = ParticleSteam(); break;					
 				}
-				p.velocity = Vector2{ static_cast<float>(random_val(-1, 1)), static_cast<float>(random_val(-2, 5)) };
-				write_data(idx, p);
+				p.velocity = Vector2{ static_cast<float>(RandomVal(-1, 1)), static_cast<float>(RandomVal(-2, 5)) };
+				WriteData(idx, p);
 			}
 		}
 	}
@@ -481,8 +474,8 @@ void CellularAutomata::OnMouseDown(WPARAM btnState, int x, int y)
 				unsigned int ry = mp_y + i;
 				Vector2 r = Vector2{ static_cast<float>(rx), static_cast<float>(ry) };
 				Vector2 mp = Vector2{ static_cast<float>(x), static_cast<float>(y) };
-				if (in_bounds(rx, ry) && vectorDistance(mp, r) <= R) {
-					write_data(compute_idx(rx, ry), particle_empty());
+				if (InBounds(rx, ry) && VectorDistance(mp, r) <= R) {
+					WriteData(ComputeID(rx, ry), ParticleEmpty());
 				}
 			}
 		}
@@ -516,14 +509,16 @@ void CellularAutomata::OnKeyUp(WPARAM button)
 	SelectMaterial(button);
 }
 
-Particle CellularAutomata::particle_empty() {
+inline Particle CellularAutomata::ParticleEmpty()
+{
 	Particle p = { 0 };
 	p.id = mat_id_empty;
 	p.color = mat_col_empty;
 	return p;
 }
 
-Particle CellularAutomata::particle_sand() {
+inline Particle CellularAutomata::ParticleSand()
+{
 	Particle p = { 0 };
 	p.id = mat_id_sand;
 	// Random sand color
@@ -534,7 +529,8 @@ Particle CellularAutomata::particle_sand() {
 	return p;
 }
 
-Particle CellularAutomata::particle_water() {
+inline Particle CellularAutomata::ParticleWater()
+{
 	Particle p = { 0 };
 	p.id = mat_id_water;
 	p.color.r = 25;
@@ -544,11 +540,11 @@ Particle CellularAutomata::particle_water() {
 	return p;
 }
 
-Particle CellularAutomata::particle_stone()
+inline Particle CellularAutomata::ParticleStone()
 {
 	Particle p = { 0 };
 	p.id = mat_id_stone;
-	float r = (float)(random_val(0, 1)) / 2.f;
+	float r = (float)(RandomVal(0, 1)) / 2.f;
 	p.color.r = 128;
 	p.color.g = 128;
 	p.color.b = 128;
@@ -556,7 +552,7 @@ Particle CellularAutomata::particle_stone()
 	return p;
 }
 
-Particle CellularAutomata::particle_fire()
+inline Particle CellularAutomata::ParticleFire()
 {
 	Particle p = { 0 };
 	p.id = mat_id_fire;
@@ -564,7 +560,7 @@ Particle CellularAutomata::particle_fire()
 	return p;
 }
 
-Particle CellularAutomata::particle_smoke()
+inline Particle CellularAutomata::ParticleSmoke()
 {
 	Particle p = { 0 };
 	p.id = mat_id_smoke;
@@ -572,7 +568,7 @@ Particle CellularAutomata::particle_smoke()
 	return p;
 }
 
-Particle CellularAutomata::particle_steam()
+inline Particle CellularAutomata::ParticleSteam()
 {
 	Particle p = { 0 };
 	p.id = mat_id_steam;
@@ -580,7 +576,7 @@ Particle CellularAutomata::particle_steam()
 	return p;
 }
 
-void CellularAutomata::update_particle_sim(const GameTimer& gt)
+void CellularAutomata::UpdateParticleSim(const GameTimer& gt)
 {
 	// Update frame counter ( loop back to 0 if we roll past unsigned int max )
 	bool frame_counter_even = ((frameCounter % 2) == 0);
@@ -596,26 +592,25 @@ void CellularAutomata::update_particle_sim(const GameTimer& gt)
 		for (unsigned int x = ran ? 0 : textureWidth - 1; ran ? x < textureWidth : x > 0; ran ? ++x : --x)
 		{
 			// Current particle idx
-			unsigned int read_idx = compute_idx(x, y);
+			unsigned int read_idx = ComputeID(x, y);
 
 			// Get material of particle at point
-			uint8_t mat_id = get_particle_at(x, y).id;
+			uint8_t mat_id = GetParticleAt(x, y).id;
 
 			// Update particle's lifetime (I guess just use frames)? Or should I have sublife?
-			worldData.at(read_idx).life_time += 1.f * dt;
+			WorldData.at(read_idx).life_time += 1.f * dt;
 
 			switch (mat_id) {
 
-			case mat_id_sand:  update_sand(x, y, gt);  break;
-			case mat_id_water: update_water(x, y, gt); break;
-			case mat_id_smoke: update_smoke(x, y, gt); break;
-			case mat_id_steam: update_steam(x, y, gt); break;
-			case mat_id_fire:  update_fire(x, y, gt);  break;
+			case mat_id_sand:  UpdateSand(x, y, gt);  break;
+			case mat_id_water: UpdateWater(x, y, gt); break;
+			case mat_id_smoke: UpdateSmoke(x, y, gt); break;
+			case mat_id_steam: UpdateSteam(x, y, gt); break;
+			case mat_id_fire:  UpdateFire(x, y, gt);  break;
 				// Do nothing for empty or default case
 			default:
 			case mat_id_empty:
 			{
-				// update_default( w, h, i ); 
 			} break;
 			}
 		}
@@ -626,23 +621,18 @@ void CellularAutomata::update_particle_sim(const GameTimer& gt)
 	for (unsigned int y = textureHeight - 1; y > 0; --y) {
 		for (unsigned int x = ran ? 0 : textureWidth - 1; ran ? x < textureWidth : x > 0; ran ? ++x : --x) {
 			// Set particle's update to false for next frame
-			worldData.at(compute_idx(x, y)).has_been_updated_this_frame = false;
+			WorldData.at(ComputeID(x, y)).has_been_updated_this_frame = false;
 		}
 	}
 }
 
-void CellularAutomata::update_default(uint32_t w, uint32_t h) {
-	uint8_t read_idx = compute_idx(w, h);
-	write_data(read_idx, get_particle_at(w, h));
-}
-
-void CellularAutomata::update_fire(uint32_t x, uint32_t y, const GameTimer& gt)
+void CellularAutomata::UpdateFire(uint32_t x, uint32_t y, const GameTimer& gt)
 {
 	float dt = gt.DeltaTime();
 
 	// For water, same as sand, but we'll check immediate left and right as well
-	int read_idx = compute_idx(x, y);
-	Particle* p = &worldData.at(read_idx);
+	int read_idx = ComputeID(x, y);
+	Particle* p = &WorldData.at(read_idx);
 	uint32_t write_idx = read_idx;
 	uint32_t fall_rate = 4;
 
@@ -653,8 +643,8 @@ void CellularAutomata::update_fire(uint32_t x, uint32_t y, const GameTimer& gt)
 	p->has_been_updated_this_frame = true;
 
 	if (p->life_time > 0.2f) {
-		if (random_val(0, 100) == 0) {
-			write_data(read_idx, particle_empty());
+		if (RandomVal(0, 100) == 0) {
+			WriteData(read_idx, ParticleEmpty());
 			return;
 		}
 	}
@@ -663,12 +653,12 @@ void CellularAutomata::update_fire(uint32_t x, uint32_t y, const GameTimer& gt)
 	// float grav_mul = random_val( 0, 10 ) == 0 ? 2.f : 1.f;
 	p->velocity.y = std::clamp(p->velocity.y - ((gravity * dt)) * 0.2f, -5.0f, 0.f);
 	// p->velocity.x = std::clamp( st, -1.f, 1.f );
-	p->velocity.x = std::clamp(p->velocity.x + (float)random_val(-100, 100) / 200.f, -0.5f, 0.5f);
+	p->velocity.x = std::clamp(p->velocity.x + (float)RandomVal(-100, 100) / 200.f, -0.5f, 0.5f);
 
 	// Change color based on life_time
 
-	if (random_val(0, (int)(p->life_time * 100.f)) % 200 == 0) {
-		int ran = random_val(0, 3);
+	if (RandomVal(0, (int)(p->life_time * 100.f)) % 200 == 0) {
+		int ran = RandomVal(0, 3);
 		switch (ran) {
 		case 0: p->color = { 255, 80, 20, 255 }; break;
 		case 1: p->color = { 250, 150, 10, 255 }; break;
@@ -687,57 +677,57 @@ void CellularAutomata::update_fire(uint32_t x, uint32_t y, const GameTimer& gt)
 	// In water, so create steam and DIE
 	// Should also kill the water...
 	int lx, ly;
-	if (is_in_water(x, y, &lx, &ly)) {
-		if (random_val(0, 1) == 0) {
-			int ry = random_val(-5, -1);
-			int rx = random_val(-5, 5);
+	if (IsInWater(x, y, &lx, &ly)) {
+		if (RandomVal(0, 1) == 0) {
+			int ry = RandomVal(-5, -1);
+			int rx = RandomVal(-5, 5);
 			for (int i = ry; i > -5; --i) {
 				for (int j = rx; j < 5; ++j) {
-					Particle p = particle_steam();
-					if (in_bounds(x + j, y + i) && is_empty(x + j, y + i)) {
-						Particle p = particle_steam();
-						write_data(compute_idx(x + j, y + i), p);
+					Particle p = ParticleSteam();
+					if (InBounds(x + j, y + i) && IsEmpty(x + j, y + i)) {
+						Particle p = ParticleSteam();
+						WriteData(ComputeID(x + j, y + i), p);
 					}
 				}
 			}
-			Particle p = particle_steam();
-			write_data(read_idx, particle_empty());
-			write_data(read_idx, p);
-			write_data(compute_idx(lx, ly), particle_empty());
+			Particle p = ParticleSteam();
+			WriteData(read_idx, ParticleEmpty());
+			WriteData(read_idx, p);
+			WriteData(ComputeID(lx, ly), ParticleEmpty());
 			return;
 		}
 	}
 
 	// Just check if you can move directly beneath you. If not, then reset your velocity. God, this is going to blow.
-	if (in_bounds(x, y + 1) && !is_empty(x, y + 1) && (get_particle_at(x, y + 1).id != mat_id_water || get_particle_at(x, y + 1).id != mat_id_smoke)) {
+	if (InBounds(x, y + 1) && !IsEmpty(x, y + 1) && (GetParticleAt(x, y + 1).id != mat_id_water || GetParticleAt(x, y + 1).id != mat_id_smoke)) {
 		p->velocity.y /= 2.f;
 	}
 
-	if (random_val(0, 10) == 0) {
+	if (RandomVal(0, 10) == 0) {
 		// p->velocity.x = std::clamp( p->velocity.x + (float)random_val( -1, 1 ) / 2.f, -1.f, 1.f );
 	}
 	// p->velocity.x = std::clamp( p->velocity.x, -0.5f, 0.5f );
 
 	// Kill fire underneath
-	if (in_bounds(x, y + 3) && get_particle_at(x, y + 3).id == mat_id_fire && random_val(0, 100) == 0) {
-		write_data(compute_idx(x, y + 3), *p);
-		write_data(read_idx, particle_empty());
+	if (InBounds(x, y + 3) && GetParticleAt(x, y + 3).id == mat_id_fire && RandomVal(0, 100) == 0) {
+		WriteData(ComputeID(x, y + 3), *p);
+		WriteData(read_idx, ParticleEmpty());
 		return;
 	}
 
 	// Chance to kick itself up ( to simulate flames )
-	if (in_bounds(x, y + 1) && get_particle_at(x, y + 1).id == mat_id_fire &&
-		in_bounds(x, y - 1) && get_particle_at(x, y - 1).id == mat_id_empty) {
-		if (random_val(0, 10) == 0 * p->life_time < 10.f && p->life_time > 1.f) {
-			int r = random_val(0, 1);
-			int rh = random_val(-10, -1);
+	if (InBounds(x, y + 1) && GetParticleAt(x, y + 1).id == mat_id_fire &&
+		InBounds(x, y - 1) && GetParticleAt(x, y - 1).id == mat_id_empty) {
+		if (RandomVal(0, 10) == 0 * p->life_time < 10.f && p->life_time > 1.f) {
+			int r = RandomVal(0, 1);
+			int rh = RandomVal(-10, -1);
 			int spread = 3;
 			for (int i = rh; i < 0; ++i) {
 				for (int j = r ? -spread : spread; r ? j < spread : j > -spread; r ? ++j : --j) {
 					int rx = j, ry = i;
-					if (in_bounds(x + rx, y + ry) && is_empty(x + rx, y + ry)) {
-						write_data(compute_idx(x + rx, y + ry), *p);
-						write_data(read_idx, particle_empty());
+					if (InBounds(x + rx, y + ry) && IsEmpty(x + rx, y + ry)) {
+						WriteData(ComputeID(x + rx, y + ry), *p);
+						WriteData(read_idx, ParticleEmpty());
 						break;
 					}
 				}
@@ -750,100 +740,100 @@ void CellularAutomata::update_fire(uint32_t x, uint32_t y, const GameTimer& gt)
 	int vi_y = y + (int)p->velocity.y;
 
 	// Check to see if you can swap first with other element below you
-	uint32_t b_idx = compute_idx(x, y + 1);
-	uint32_t br_idx = compute_idx(x + 1, y + 1);
-	uint32_t bl_idx = compute_idx(x - 1, y + 1);
+	uint32_t b_idx = ComputeID(x, y + 1);
+	uint32_t br_idx = ComputeID(x + 1, y + 1);
+	uint32_t bl_idx = ComputeID(x - 1, y + 1);
 
 	const int wood_chance = 100;
 	const int gun_powder_chance = 1;
 	const int oil_chance = 5;
 
 	// Chance to spawn smoke above
-	for (uint32_t i = 0; i < random_val(1, 10); ++i) {
-		if (random_val(0, 500) == 0) {
-			if (in_bounds(x, y - 1) && is_empty(x, y - 1)) {
-				write_data(compute_idx(x, y - 1), particle_smoke());
+	for (uint32_t i = 0; i < RandomVal(1, 10); ++i) {
+		if (RandomVal(0, 500) == 0) {
+			if (InBounds(x, y - 1) && IsEmpty(x, y - 1)) {
+				WriteData(ComputeID(x, y - 1), ParticleSmoke());
 			}
-			else if (in_bounds(x + 1, y - 1) && is_empty(x + 1, y - 1)) {
-				write_data(compute_idx(x + 1, y - 1), particle_smoke());
+			else if (InBounds(x + 1, y - 1) && IsEmpty(x + 1, y - 1)) {
+				WriteData(ComputeID(x + 1, y - 1), ParticleSmoke());
 			}
-			else if (in_bounds(x - 1, y - 1) && is_empty(x - 1, y - 1)) {
-				write_data(compute_idx(x - 1, y - 1), particle_smoke());
+			else if (InBounds(x - 1, y - 1) && IsEmpty(x - 1, y - 1)) {
+				WriteData(ComputeID(x - 1, y - 1), ParticleSmoke());
 			}
 		}
 	}		
 
-	if (in_bounds(vi_x, vi_y) && (is_empty(vi_x, vi_y) ||
-		get_particle_at(vi_x, vi_y).id == mat_id_fire ||
-		get_particle_at(vi_x, vi_y).id == mat_id_smoke))
+	if (InBounds(vi_x, vi_y) && (IsEmpty(vi_x, vi_y) ||
+		GetParticleAt(vi_x, vi_y).id == mat_id_fire ||
+		GetParticleAt(vi_x, vi_y).id == mat_id_smoke))
 	{
 		// p->velocity.y -= (gravity * dt );
-		Particle tmp_b = worldData.at(compute_idx(vi_x, vi_y));
-		write_data(compute_idx(vi_x, vi_y), *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = WorldData.at(ComputeID(vi_x, vi_y));
+		WriteData(ComputeID(vi_x, vi_y), *p);
+		WriteData(read_idx, tmp_b);
 	}
 
 	// Simple falling, changing the velocity here ruins everything. I need to redo this entire simulation.
-	else if (in_bounds(x, y + 1) && ((is_empty(x, y + 1) || (worldData.at(b_idx).id == mat_id_water)))) {
+	else if (InBounds(x, y + 1) && ((IsEmpty(x, y + 1) || (WorldData.at(b_idx).id == mat_id_water)))) {
 		// p->velocity.y -= (gravity * dt );
 		// p->velocity.x = random_val( 0, 1 ) == 0 ? -1.f : 1.f;
-		Particle tmp_b = worldData.at(b_idx);
-		write_data(b_idx, *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = WorldData.at(b_idx);
+		WriteData(b_idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x - 1, y + 1) && ((is_empty(x - 1, y + 1) || worldData.at(bl_idx).id == mat_id_water))) {
+	else if (InBounds(x - 1, y + 1) && ((IsEmpty(x - 1, y + 1) || WorldData.at(bl_idx).id == mat_id_water))) {
 		// p->velocity.x = random_val( 0, 1 ) == 0 ? -1.f : 1.f;
 		// p->velocity.y -= (gravity * dt );
-		Particle tmp_b = worldData.at(bl_idx);
-		write_data(bl_idx, *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = WorldData.at(bl_idx);
+		WriteData(bl_idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x + 1, y + 1) && ((is_empty(x + 1, y + 1) || worldData.at(br_idx).id == mat_id_water))) {
+	else if (InBounds(x + 1, y + 1) && ((IsEmpty(x + 1, y + 1) || WorldData.at(br_idx).id == mat_id_water))) {
 		// p->velocity.x = random_val( 0, 1 ) == 0 ? -1.f : 1.f;
 		// p->velocity.y -= (gravity * dt );
-		Particle tmp_b = worldData.at(br_idx);
-		write_data(br_idx, *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = WorldData.at(br_idx);
+		WriteData(br_idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x - 1, y - 1) && (worldData.at(compute_idx(x - 1, y - 1)).id == mat_id_water)) {
-		uint32_t idx = compute_idx(x - 1, y - 1);
+	else if (InBounds(x - 1, y - 1) && (WorldData.at(ComputeID(x - 1, y - 1)).id == mat_id_water)) {
+		uint32_t idx = ComputeID(x - 1, y - 1);
 		// p->velocity.x = random_val( 0, 1 ) == 0 ? -1.f : 1.f;
-		Particle tmp_b = worldData.at(idx);
-		write_data(idx, *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = WorldData.at(idx);
+		WriteData(idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x + 1, y - 1) && (worldData.at(compute_idx(x + 1, y - 1)).id == mat_id_water)) {
-		uint32_t idx = compute_idx(x + 1, y - 1);
+	else if (InBounds(x + 1, y - 1) && (WorldData.at(ComputeID(x + 1, y - 1)).id == mat_id_water)) {
+		uint32_t idx = ComputeID(x + 1, y - 1);
 		// p->velocity.x = random_val( 0, 1 ) == 0 ? -1.f : 1.f;
-		Particle tmp_b = worldData.at(idx);
-		write_data(idx, *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = WorldData.at(idx);
+		WriteData(idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x, y - 1) && (worldData.at(compute_idx(x, y - 1)).id == mat_id_water)) {
-		uint32_t idx = compute_idx(x, y - 1);
+	else if (InBounds(x, y - 1) && (WorldData.at(ComputeID(x, y - 1)).id == mat_id_water)) {
+		uint32_t idx = ComputeID(x, y - 1);
 		// p->velocity.x = random_val( 0, 1 ) == 0 ? -1.f : 1.f;
-		Particle tmp_b = worldData.at(idx);
-		write_data(idx, *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = WorldData.at(idx);
+		WriteData(idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
 	else {
 		// p->velocity.x = random_val( 0, 1 ) == 0 ? -1.f : 1.f;
-		write_data(read_idx, *p);
+		WriteData(read_idx, *p);
 	}
 }
 
-void CellularAutomata::update_smoke(uint32_t x, uint32_t y, const GameTimer& gt)
+void CellularAutomata::UpdateSmoke(uint32_t x, uint32_t y, const GameTimer& gt)
 {
 	float dt = gt.DeltaTime();
 
 	// For water, same as sand, but we'll check immediate left and right as well
-	uint32_t read_idx = compute_idx(x, y);
-	Particle* p = &worldData.at(read_idx);
+	uint32_t read_idx = ComputeID(x, y);
+	Particle* p = &WorldData.at(read_idx);
 	uint32_t write_idx = read_idx;
 	uint32_t fall_rate = 4;
 
 	if (p->life_time > 10.f) {
-		write_data(read_idx, particle_empty());
+		WriteData(read_idx, ParticleEmpty());
 		return;
 	}
 
@@ -855,10 +845,10 @@ void CellularAutomata::update_smoke(uint32_t x, uint32_t y, const GameTimer& gt)
 
 	// Smoke rises over time. This might cause issues, actually...
 	p->velocity.y = std::clamp(p->velocity.y - (gravity * dt), -2.f, 10.f);
-	p->velocity.x = std::clamp(p->velocity.x + (float)random_val(-100, 100) / 100.f, -1.f, 1.f);
+	p->velocity.x = std::clamp(p->velocity.x + (float)RandomVal(-100, 100) / 100.f, -1.f, 1.f);
 
 	// Just check if you can move directly beneath you. If not, then reset your velocity. God, this is going to blow.
-	if (in_bounds(x, y - 1) && !is_empty(x, y - 1) && get_particle_at(x, y - 1).id != mat_id_water) {
+	if (InBounds(x, y - 1) && !IsEmpty(x, y - 1) && GetParticleAt(x, y - 1).id != mat_id_water) {
 		p->velocity.y /= 2.f;
 	}
 
@@ -866,83 +856,83 @@ void CellularAutomata::update_smoke(uint32_t x, uint32_t y, const GameTimer& gt)
 	int vi_y = y + (int)p->velocity.y;
 
 	// if ( in_bounds( vi_x, vi_y ) && ( (is_empty( vi_x, vi_y ) || get_particle_at( vi_x, vi_y ).id == mat_id_water || get_particle_at( vi_x, vi_y ).id == mat_id_fire ) ) ) {
-	if (in_bounds(vi_x, vi_y) && get_particle_at(vi_x, vi_y).id != mat_id_smoke) {
+	if (InBounds(vi_x, vi_y) && GetParticleAt(vi_x, vi_y).id != mat_id_smoke) {
 
-		Particle tmp_b = worldData.at(compute_idx(vi_x, vi_y));
+		Particle tmp_b = WorldData.at(ComputeID(vi_x, vi_y));
 
 		// Try to throw water out
 		if (tmp_b.id == mat_id_water) {
 
 			tmp_b.has_been_updated_this_frame = true;
 
-			int rx = random_val(-2, 2);
+			int rx = RandomVal(-2, 2);
 			tmp_b.velocity = { static_cast<float>(rx), -3.0f };
 
-			write_data(compute_idx(vi_x, vi_y), *p);
-			write_data(read_idx, tmp_b);
+			WriteData(ComputeID(vi_x, vi_y), *p);
+			WriteData(read_idx, tmp_b);
 
 		}
-		else if (is_empty(vi_x, vi_y)) {
-			write_data(compute_idx(vi_x, vi_y), *p);
-			write_data(read_idx, tmp_b);
+		else if (IsEmpty(vi_x, vi_y)) {
+			WriteData(ComputeID(vi_x, vi_y), *p);
+			WriteData(read_idx, tmp_b);
 		}
 	}
 	// Simple falling, changing the velocity here ruins everything. I need to redo this entire simulation.
-	else if (in_bounds(x, y - 1) && get_particle_at(x, y - 1).id != mat_id_smoke &&
-		get_particle_at(x, y - 1).id != mat_id_stone) {
+	else if (InBounds(x, y - 1) && GetParticleAt(x, y - 1).id != mat_id_smoke &&
+		GetParticleAt(x, y - 1).id != mat_id_stone) {
 		p->velocity.y -= (gravity * dt);
-		Particle tmp_b = get_particle_at(x, y - 1);
-		write_data(compute_idx(x, y - 1), *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = GetParticleAt(x, y - 1);
+		WriteData(ComputeID(x, y - 1), *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x - 1, y - 1) && get_particle_at(x - 1, y - 1).id != mat_id_smoke &&
-		get_particle_at(x - 1, y - 1).id != mat_id_stone) {
-		p->velocity.x = random_val(0, 1) == 0 ? -1.2f : 1.2f;
+	else if (InBounds(x - 1, y - 1) && GetParticleAt(x - 1, y - 1).id != mat_id_smoke &&
+		GetParticleAt(x - 1, y - 1).id != mat_id_stone) {
+		p->velocity.x = RandomVal(0, 1) == 0 ? -1.2f : 1.2f;
 		p->velocity.y -= (gravity * dt);
-		Particle tmp_b = get_particle_at(x - 1, y - 1);
-		write_data(compute_idx(x - 1, y - 1), *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = GetParticleAt(x - 1, y - 1);
+		WriteData(ComputeID(x - 1, y - 1), *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x + 1, y - 1) && get_particle_at(x + 1, y - 1).id != mat_id_smoke &&
-		get_particle_at(x + 1, y - 1).id != mat_id_stone) {
-		p->velocity.x = random_val(0, 1) == 0 ? -1.2f : 1.2f;
+	else if (InBounds(x + 1, y - 1) && GetParticleAt(x + 1, y - 1).id != mat_id_smoke &&
+		GetParticleAt(x + 1, y - 1).id != mat_id_stone) {
+		p->velocity.x = RandomVal(0, 1) == 0 ? -1.2f : 1.2f;
 		p->velocity.y -= (gravity * dt);
-		Particle tmp_b = get_particle_at(x + 1, y - 1);
-		write_data(compute_idx(x + 1, y - 1), *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = GetParticleAt(x + 1, y - 1);
+		WriteData(ComputeID(x + 1, y - 1), *p);
+		WriteData(read_idx, tmp_b);
 	}
 	// Can move if in liquid
-	else if (in_bounds(x + 1, y) && get_particle_at(x + 1, y).id != mat_id_smoke &&
-		get_particle_at(x + 1, y).id != mat_id_stone) {
-		uint32_t idx = compute_idx(x + 1, y);
-		Particle tmp_b = worldData.at(idx);
-		write_data(idx, *p);
-		write_data(read_idx, tmp_b);
+	else if (InBounds(x + 1, y) && GetParticleAt(x + 1, y).id != mat_id_smoke &&
+		GetParticleAt(x + 1, y).id != mat_id_stone) {
+		uint32_t idx = ComputeID(x + 1, y);
+		Particle tmp_b = WorldData.at(idx);
+		WriteData(idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x - 1, y) && get_particle_at(x - 1, y).id != mat_id_smoke &&
-		get_particle_at(x - 1, y).id != mat_id_stone) {
-		uint32_t idx = compute_idx(x - 1, y);
-		Particle tmp_b = worldData.at(idx);
-		write_data(idx, *p);
-		write_data(read_idx, tmp_b);
+	else if (InBounds(x - 1, y) && GetParticleAt(x - 1, y).id != mat_id_smoke &&
+		GetParticleAt(x - 1, y).id != mat_id_stone) {
+		uint32_t idx = ComputeID(x - 1, y);
+		Particle tmp_b = WorldData.at(idx);
+		WriteData(idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
 	else {
-		write_data(read_idx, *p);
+		WriteData(read_idx, *p);
 	}
 }
 
-void CellularAutomata::update_steam(uint32_t x, uint32_t y, const GameTimer& gt)
+void CellularAutomata::UpdateSteam(uint32_t x, uint32_t y, const GameTimer& gt)
 {
 	float dt = gt.DeltaTime();
 
 	// For water, same as sand, but we'll check immediate left and right as well
-	uint32_t read_idx = compute_idx(x, y);
-	Particle* p = &worldData.at(read_idx);
+	uint32_t read_idx = ComputeID(x, y);
+	Particle* p = &WorldData.at(read_idx);
 	uint32_t write_idx = read_idx;
 	uint32_t fall_rate = 4;
 
 	if (p->life_time > 10.f) {
-		write_data(read_idx, particle_empty());
+		WriteData(read_idx, ParticleEmpty());
 		return;
 	}
 
@@ -954,73 +944,73 @@ void CellularAutomata::update_steam(uint32_t x, uint32_t y, const GameTimer& gt)
 
 	// Smoke rises over time. This might cause issues, actually...
 	p->velocity.y = std::clamp(p->velocity.y - (gravity * dt), -2.f, 10.f);
-	p->velocity.x = std::clamp(p->velocity.x + (float)random_val(-100, 100) / 100.f, -1.f, 1.f);
+	p->velocity.x = std::clamp(p->velocity.x + (float)RandomVal(-100, 100) / 100.f, -1.f, 1.f);
 
 	// Just check if you can move directly beneath you. If not, then reset your velocity. God, this is going to blow.
-	if (in_bounds(x, y - 1) && !is_empty(x, y - 1) && get_particle_at(x, y - 1).id != mat_id_water) {
+	if (InBounds(x, y - 1) && !IsEmpty(x, y - 1) && GetParticleAt(x, y - 1).id != mat_id_water) {
 		p->velocity.y /= 2.f;
 	}
 
 	int vi_x = x + (int)p->velocity.x;
 	int vi_y = y + (int)p->velocity.y;
 
-	if (in_bounds(vi_x, vi_y) && ((is_empty(vi_x, vi_y) || get_particle_at(vi_x, vi_y).id == mat_id_water || get_particle_at(vi_x, vi_y).id == mat_id_fire))) {
+	if (InBounds(vi_x, vi_y) && ((IsEmpty(vi_x, vi_y) || GetParticleAt(vi_x, vi_y).id == mat_id_water || GetParticleAt(vi_x, vi_y).id == mat_id_fire))) {
 
-		Particle tmp_b = worldData.at(compute_idx(vi_x, vi_y));
+		Particle tmp_b = WorldData.at(ComputeID(vi_x, vi_y));
 
 		// Try to throw water out
 		if (tmp_b.id == mat_id_water) {
 
 			tmp_b.has_been_updated_this_frame = true;
 
-			int rx = random_val(-2, 2);
+			int rx = RandomVal(-2, 2);
 			tmp_b.velocity = { static_cast<float>(rx), -3.f };
 
-			write_data(compute_idx(vi_x, vi_y), *p);
-			write_data(read_idx, tmp_b);
+			WriteData(ComputeID(vi_x, vi_y), *p);
+			WriteData(read_idx, tmp_b);
 
 		}
-		else if (is_empty(vi_x, vi_y)) {
-			write_data(compute_idx(vi_x, vi_y), *p);
-			write_data(read_idx, tmp_b);
+		else if (IsEmpty(vi_x, vi_y)) {
+			WriteData(ComputeID(vi_x, vi_y), *p);
+			WriteData(read_idx, tmp_b);
 		}
 	}
 	// Simple falling, changing the velocity here ruins everything. I need to redo this entire simulation.
-	else if (in_bounds(x, y - 1) && ((is_empty(x, y - 1) || (get_particle_at(x, y - 1).id == mat_id_water) || get_particle_at(x, y - 1).id == mat_id_fire))) {
+	else if (InBounds(x, y - 1) && ((IsEmpty(x, y - 1) || (GetParticleAt(x, y - 1).id == mat_id_water) || GetParticleAt(x, y - 1).id == mat_id_fire))) {
 		p->velocity.y -= (gravity * dt);
-		Particle tmp_b = get_particle_at(x, y - 1);
-		write_data(compute_idx(x, y - 1), *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = GetParticleAt(x, y - 1);
+		WriteData(ComputeID(x, y - 1), *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x - 1, y - 1) && ((is_empty(x - 1, y - 1) || get_particle_at(x - 1, y - 1).id == mat_id_water) || get_particle_at(x - 1, y - 1).id == mat_id_fire)) {
-		p->velocity.x = random_val(0, 1) == 0 ? -1.2f : 1.2f;
+	else if (InBounds(x - 1, y - 1) && ((IsEmpty(x - 1, y - 1) || GetParticleAt(x - 1, y - 1).id == mat_id_water) || GetParticleAt(x - 1, y - 1).id == mat_id_fire)) {
+		p->velocity.x = RandomVal(0, 1) == 0 ? -1.2f : 1.2f;
 		p->velocity.y -= (gravity * dt);
-		Particle tmp_b = get_particle_at(x - 1, y - 1);
-		write_data(compute_idx(x - 1, y - 1), *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = GetParticleAt(x - 1, y - 1);
+		WriteData(ComputeID(x - 1, y - 1), *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x + 1, y - 1) && ((is_empty(x + 1, y - 1) || get_particle_at(x + 1, y - 1).id == mat_id_water) || get_particle_at(x + 1, y - 1).id == mat_id_fire)) {
-		p->velocity.x = random_val(0, 1) == 0 ? -1.2f : 1.2f;
+	else if (InBounds(x + 1, y - 1) && ((IsEmpty(x + 1, y - 1) || GetParticleAt(x + 1, y - 1).id == mat_id_water) || GetParticleAt(x + 1, y - 1).id == mat_id_fire)) {
+		p->velocity.x = RandomVal(0, 1) == 0 ? -1.2f : 1.2f;
 		p->velocity.y -= (gravity * dt);
-		Particle tmp_b = get_particle_at(x + 1, y - 1);
-		write_data(compute_idx(x + 1, y - 1), *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = GetParticleAt(x + 1, y - 1);
+		WriteData(ComputeID(x + 1, y - 1), *p);
+		WriteData(read_idx, tmp_b);
 	}
 	// Can move if in liquid
-	else if (in_bounds(x + 1, y) && (get_particle_at(x + 1, y).id == mat_id_water)) {
-		uint32_t idx = compute_idx(x + 1, y);
-		Particle tmp_b = worldData.at(idx);
-		write_data(idx, *p);
-		write_data(read_idx, tmp_b);
+	else if (InBounds(x + 1, y) && (GetParticleAt(x + 1, y).id == mat_id_water)) {
+		uint32_t idx = ComputeID(x + 1, y);
+		Particle tmp_b = WorldData.at(idx);
+		WriteData(idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x - 1, y) && (worldData.at(compute_idx(x - 1, y)).id == mat_id_water)) {
-		uint32_t idx = compute_idx(x - 1, y);
-		Particle tmp_b = worldData.at(idx);
-		write_data(idx, *p);
-		write_data(read_idx, tmp_b);
+	else if (InBounds(x - 1, y) && (WorldData.at(ComputeID(x - 1, y)).id == mat_id_water)) {
+		uint32_t idx = ComputeID(x - 1, y);
+		Particle tmp_b = WorldData.at(idx);
+		WriteData(idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
 	else {
-		write_data(read_idx, *p);
+		WriteData(read_idx, *p);
 	}
 }
 
@@ -1042,10 +1032,10 @@ void CellularAutomata::ShowControls()
 void CellularAutomata::ClearScreen()
 {
 	std::vector<Particle> tempData{ textureWidth * textureHeight }; // construct a new scene with default data
-	worldData.assign(tempData.begin(), tempData.end()); // overwrite existing data
+	WorldData.assign(tempData.begin(), tempData.end()); // overwrite existing data
 
 	std::vector<Color32> tempColor{ textureWidth * textureHeight, Color32(0, 0, 0, 0) };
-	colorData.assign(tempColor.begin(), tempColor.end());
+	ColorData.assign(tempColor.begin(), tempColor.end());
 }
 
 void CellularAutomata::SelectMaterial(WPARAM button)
@@ -1072,19 +1062,19 @@ void CellularAutomata::SelectMaterial(WPARAM button)
 	}
 }
 
-void CellularAutomata::update_sand(uint32_t x, uint32_t y, const GameTimer& gt) {
+void CellularAutomata::UpdateSand(uint32_t x, uint32_t y, const GameTimer& gt) {
 	float dt = gt.DeltaTime();
 
 	// For water, same as sand, but we'll check immediate left and right as well
-	unsigned int read_idx = compute_idx(x, y);
-	Particle* p = &worldData.at(read_idx);
+	unsigned int read_idx = ComputeID(x, y);
+	Particle* p = &WorldData.at(read_idx);
 	unsigned int write_idx = read_idx;
 	unsigned int fall_rate = 4;
 
 	p->velocity.y = std::clamp(p->velocity.y + (gravity * dt), -10.f, 10.f);
 
 	// Just check if you can move directly beneath you. If not, then reset your velocity. God, this is going to blow.
-	if (in_bounds(x, y + 1) && !is_empty(x, y + 1) && get_particle_at(x, y + 1).id != mat_id_water) {
+	if (InBounds(x, y + 1) && !IsEmpty(x, y + 1) && GetParticleAt(x, y + 1).id != mat_id_water) {
 		p->velocity.y /= 2.f;
 	}
 
@@ -1092,80 +1082,80 @@ void CellularAutomata::update_sand(uint32_t x, uint32_t y, const GameTimer& gt) 
 	int vi_y = y + (int)p->velocity.y;
 
 	// Check to see if you can swap first with other element below you
-	unsigned int b_idx = compute_idx(x, y + 1);
-	unsigned int br_idx = compute_idx(x + 1, y + 1);
-	unsigned int bl_idx = compute_idx(x - 1, y + 1);
+	unsigned int b_idx = ComputeID(x, y + 1);
+	unsigned int br_idx = ComputeID(x + 1, y + 1);
+	unsigned int bl_idx = ComputeID(x - 1, y + 1);
 
 	int lx{}, ly{};
 
-	Particle tmp_a = worldData.at(read_idx);
+	Particle tmp_a = WorldData.at(read_idx);
 
 	// Physics (using velocity)
-	if (in_bounds(vi_x, vi_y) && ((is_empty(vi_x, vi_y) ||
-		(((worldData.at(compute_idx(vi_x, vi_y)).id == mat_id_water) &&
-			!worldData.at(compute_idx(vi_x, vi_y)).has_been_updated_this_frame &&
-			(worldData.at(compute_idx(vi_x, vi_y)).velocity.Length() - tmp_a.velocity.Length()) > 10.f))))) {
+	if (InBounds(vi_x, vi_y) && ((IsEmpty(vi_x, vi_y) ||
+		(((WorldData.at(ComputeID(vi_x, vi_y)).id == mat_id_water) &&
+			!WorldData.at(ComputeID(vi_x, vi_y)).has_been_updated_this_frame &&
+			(WorldData.at(ComputeID(vi_x, vi_y)).velocity.Length() - tmp_a.velocity.Length()) > 10.f))))) {
 
-		Particle tmp_b = worldData.at(compute_idx(vi_x, vi_y));
+		Particle tmp_b = WorldData.at(ComputeID(vi_x, vi_y));
 
 		// Try to throw water out
 		if (tmp_b.id == mat_id_water) {
 
-			int rx = random_val(-2, 2);
+			int rx = RandomVal(-2, 2);
 			tmp_b.velocity = Vector2{ static_cast<float>(rx), -4.f };
 
-			write_data(compute_idx(vi_x, vi_y), tmp_a);
+			WriteData(ComputeID(vi_x, vi_y), tmp_a);
 
 			for (int i = -10; i < 0; ++i) {
 				for (int j = -10; j < 10; ++j) {
-					if (is_empty(vi_x + j, vi_y + i)) {
-						write_data(compute_idx(vi_x + j, vi_y + i), tmp_b);
+					if (IsEmpty(vi_x + j, vi_y + i)) {
+						WriteData(ComputeID(vi_x + j, vi_y + i), tmp_b);
 						break;
 					}
 				}
 			}
 
 			// Couldn't write there, so, uh, destroy it.
-			write_data(read_idx, particle_empty());
+			WriteData(read_idx, ParticleEmpty());
 		}
-		else if (is_empty(vi_x, vi_y)) {
-			write_data(compute_idx(vi_x, vi_y), tmp_a);
-			write_data(read_idx, tmp_b);
+		else if (IsEmpty(vi_x, vi_y)) {
+			WriteData(ComputeID(vi_x, vi_y), tmp_a);
+			WriteData(read_idx, tmp_b);
 		}
 	}
 	// Simple falling, changing the velocity here ruins everything. I need to redo this entire simulation.
-	else if (in_bounds(x, y + 1) && ((is_empty(x, y + 1) || (worldData.at(b_idx).id == mat_id_water)))) {
+	else if (InBounds(x, y + 1) && ((IsEmpty(x, y + 1) || (WorldData.at(b_idx).id == mat_id_water)))) {
 		p->velocity.y += (gravity * dt);
-		Particle tmp_b = get_particle_at(x, y + 1);
-		write_data(b_idx, *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = GetParticleAt(x, y + 1);
+		WriteData(b_idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x - 1, y + 1) && ((is_empty(x - 1, y + 1) || worldData.at(bl_idx).id == mat_id_water))) {
-		p->velocity.x = random_val(0, 1) == 0 ? -1.f : 1.f;
+	else if (InBounds(x - 1, y + 1) && ((IsEmpty(x - 1, y + 1) || WorldData.at(bl_idx).id == mat_id_water))) {
+		p->velocity.x = RandomVal(0, 1) == 0 ? -1.f : 1.f;
 		p->velocity.y += (gravity * dt);
-		Particle tmp_b = get_particle_at(x - 1, y + 1);
-		write_data(bl_idx, *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = GetParticleAt(x - 1, y + 1);
+		WriteData(bl_idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x + 1, y + 1) && ((is_empty(x + 1, y + 1) || worldData.at(br_idx).id == mat_id_water))) {
-		p->velocity.x = random_val(0, 1) == 0 ? -1.f : 1.f;
+	else if (InBounds(x + 1, y + 1) && ((IsEmpty(x + 1, y + 1) || WorldData.at(br_idx).id == mat_id_water))) {
+		p->velocity.x = RandomVal(0, 1) == 0 ? -1.f : 1.f;
 		p->velocity.y += (gravity * dt);
-		Particle tmp_b = get_particle_at(x + 1, y + 1);
-		write_data(br_idx, *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = GetParticleAt(x + 1, y + 1);
+		WriteData(br_idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (random_val(0, 10) == 0) {
-		Particle tmp_b = get_particle_at(lx, ly);
-		write_data(compute_idx(lx, ly), *p);
-		write_data(read_idx, tmp_b);
+	else if (RandomVal(0, 10) == 0) {
+		Particle tmp_b = GetParticleAt(lx, ly);
+		WriteData(ComputeID(lx, ly), *p);
+		WriteData(read_idx, tmp_b);
 	}
 }
 
-void CellularAutomata::update_water(uint32_t x, uint32_t y, const GameTimer& gt) {
+void CellularAutomata::UpdateWater(uint32_t x, uint32_t y, const GameTimer& gt) {
 	float dt = gt.DeltaTime();
 
-	unsigned int read_idx = compute_idx(x, y);
-	Particle* p = &worldData.at(read_idx);
+	unsigned int read_idx = ComputeID(x, y);
+	Particle* p = &WorldData.at(read_idx);
 	unsigned int write_idx = read_idx;
 	int fall_rate = 2;
 	int spread_rate = 5;
@@ -1176,97 +1166,97 @@ void CellularAutomata::update_water(uint32_t x, uint32_t y, const GameTimer& gt)
 
 	// Just check if you can move directly beneath you. If not, then reset your velocity. God, this is going to blow.
 	// if ( in_bounds( x, y + 1 ) && !is_empty( x, y + 1 ) && get_particle_at( x, y + 1 ).id != mat_id_water ) {
-	if (in_bounds(x, y + 1) && !is_empty(x, y + 1)) {
+	if (InBounds(x, y + 1) && !IsEmpty(x, y + 1)) {
 		p->velocity.y /= 2.f;
 	}
 
 	// Change color depending on pressure? Pressure would dictate how "deep" the water is, I suppose.
-	if (random_val(0, (int)(p->life_time * 100.f)) % 20 == 0) {
-		float r = (float)(random_val(0, 1)) / 2.f;
+	if (RandomVal(0, (int)(p->life_time * 100.f)) % 20 == 0) {
+		float r = (float)(RandomVal(0, 1)) / 2.f;
 		p->color.r = 25;
 		p->color.g = 76;
 		p->color.b = 178;
 	}
 
-	int ran = random_val(0, 1);
+	int ran = RandomVal(0, 1);
 	int r = ran ? spread_rate : -spread_rate;
 	int l = -r;
 	int u = fall_rate;
-	int v_idx = compute_idx(x + (int)p->velocity.x, y + (int)p->velocity.y);
-	int b_idx = compute_idx(x, y + u);
-	int bl_idx = compute_idx(x + l, y + u);
-	int br_idx = compute_idx(x + r, y + u);
-	int l_idx = compute_idx(x + l, y);
-	int r_idx = compute_idx(x + r, y);
+	int v_idx = ComputeID(x + (int)p->velocity.x, y + (int)p->velocity.y);
+	int b_idx = ComputeID(x, y + u);
+	int bl_idx = ComputeID(x + l, y + u);
+	int br_idx = ComputeID(x + r, y + u);
+	int l_idx = ComputeID(x + l, y);
+	int r_idx = ComputeID(x + r, y);
 	int vx = (int)p->velocity.x, vy = (int)p->velocity.y;
 	int lx{}, ly{};
 
-	if (in_bounds(x + vx, y + vy) && (is_empty(x + vx, y + vy))) {
-		write_data(v_idx, *p);
-		write_data(read_idx, particle_empty());
+	if (InBounds(x + vx, y + vy) && (IsEmpty(x + vx, y + vy))) {
+		WriteData(v_idx, *p);
+		WriteData(read_idx, ParticleEmpty());
 	}
-	else if (is_empty(x, y + u)) {
-		write_data(b_idx, *p);
-		write_data(read_idx, particle_empty());
+	else if (IsEmpty(x, y + u)) {
+		WriteData(b_idx, *p);
+		WriteData(read_idx, ParticleEmpty());
 	}
-	else if (is_empty(x + r, y + u)) {
-		write_data(br_idx, *p);
-		write_data(read_idx, particle_empty());
+	else if (IsEmpty(x + r, y + u)) {
+		WriteData(br_idx, *p);
+		WriteData(read_idx, ParticleEmpty());
 	}
-	else if (is_empty(x + l, y + u)) {
-		write_data(bl_idx, *p);
-		write_data(read_idx, particle_empty());
+	else if (IsEmpty(x + l, y + u)) {
+		WriteData(bl_idx, *p);
+		WriteData(read_idx, ParticleEmpty());
 	}
 	// Simple falling, changing the velocity here ruins everything. I need to redo this entire simulation.
-	else if (in_bounds(x, y + u) && (is_empty(x, y + u))) {
+	else if (InBounds(x, y + u) && (IsEmpty(x, y + u))) {
 		p->velocity.y += (gravity * dt);
-		Particle tmp_b = get_particle_at(x, y + u);
-		write_data(b_idx, *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = GetParticleAt(x, y + u);
+		WriteData(b_idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x + l, y + u) && (is_empty(x + l, y + u))) {
-		p->velocity.x = random_val(0, 1) == 0 ? -1.f : 1.f;
+	else if (InBounds(x + l, y + u) && (IsEmpty(x + l, y + u))) {
+		p->velocity.x = RandomVal(0, 1) == 0 ? -1.f : 1.f;
 		p->velocity.y += (gravity * dt);
-		Particle tmp_b = get_particle_at(x + l, y + u);
-		write_data(bl_idx, *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = GetParticleAt(x + l, y + u);
+		WriteData(bl_idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (in_bounds(x + r, y + u) && (is_empty(x + r, y + u) )) {
-		p->velocity.x = random_val(0, 1) == 0 ? -1.f : 1.f;
+	else if (InBounds(x + r, y + u) && (IsEmpty(x + r, y + u) )) {
+		p->velocity.x = RandomVal(0, 1) == 0 ? -1.f : 1.f;
 		p->velocity.y += (gravity * dt);
-		Particle tmp_b = get_particle_at(x + r, y + u);
-		write_data(br_idx, *p);
-		write_data(read_idx, tmp_b);
+		Particle tmp_b = GetParticleAt(x + r, y + u);
+		WriteData(br_idx, *p);
+		WriteData(read_idx, tmp_b);
 	}
-	else if (random_val(0, 10) == 0) {
-		Particle tmp_b = get_particle_at(lx, ly);
-		write_data(compute_idx(lx, ly), *p);
-		write_data(read_idx, tmp_b);
+	else if (RandomVal(0, 10) == 0) {
+		Particle tmp_b = GetParticleAt(lx, ly);
+		WriteData(ComputeID(lx, ly), *p);
+		WriteData(read_idx, tmp_b);
 	}
 	else {
 		Particle tmp = *p;
 		bool found = false;
 
 		// Don't try to spread if something is directly above you?
-		if (completely_surrounded(x, y)) {
-			write_data(read_idx, tmp);
+		if (CompletelySurrounded(x, y)) {
+			WriteData(read_idx, tmp);
 			return;
 		}
 		else {
 			for (unsigned int i = 0; i < fall_rate; ++i) {
 				for (int j = spread_rate; j > 0; --j)
 				{
-					if (in_bounds(x - j, y + i) && (is_empty(x - j, y + i))) {
-						Particle tmp = get_particle_at(x - j, y + i);
-						write_data(compute_idx(x - j, y + i), *p);
-						write_data(read_idx, tmp);
+					if (InBounds(x - j, y + i) && (IsEmpty(x - j, y + i))) {
+						Particle tmp = GetParticleAt(x - j, y + i);
+						WriteData(ComputeID(x - j, y + i), *p);
+						WriteData(read_idx, tmp);
 						found = true;
 						break;
 					}
-					if (in_bounds(x + j, y + i) && (is_empty(x + j, y + i))) {
-						Particle tmp = get_particle_at(x + j, y + i);
-						write_data(compute_idx(x + j, y + i), *p);
-						write_data(read_idx, tmp);
+					if (InBounds(x + j, y + i) && (IsEmpty(x + j, y + i))) {
+						Particle tmp = GetParticleAt(x + j, y + i);
+						WriteData(ComputeID(x + j, y + i), *p);
+						WriteData(read_idx, tmp);
 						found = true;
 						break;
 					}
@@ -1274,139 +1264,123 @@ void CellularAutomata::update_water(uint32_t x, uint32_t y, const GameTimer& gt)
 			}
 
 			if (!found) {
-				write_data(read_idx, tmp);
+				WriteData(read_idx, tmp);
 			}
 		}
 	}
 }
 
-void CellularAutomata::write_data(uint32_t idx, Particle p) {
+void CellularAutomata::WriteData(uint32_t idx, Particle p) {
 	// Write into particle data for id value
-	worldData.at(idx) = p;
-	colorData.at(idx) = p.color;
-
-// 	for (const auto& p : worldData) {
-// 		std::wstring text = L"\n Data written to : " + std::to_wstring(p.id);
-// 		OutputDebugString(text.c_str());
-// 	}	
+	WorldData.at(idx) = p;
+	ColorData.at(idx) = p.color;
 }
 
-int CellularAutomata::random_val(int lower, int upper) {
+inline int CellularAutomata::RandomVal(int lower, int upper) {
 	if (upper < lower) {
 		int tmp = lower;
 		lower = upper;
 		upper = tmp;
 	}
-	return (rand() % (upper - lower + 1) + lower);
+
+	return (std::rand() % (upper - lower + 1) + lower);
 }
 
-int CellularAutomata::compute_idx(int x, int y) {
+inline int CellularAutomata::ComputeID(int x, int y) {
 	return (y * textureWidth + x);
 }
 
-bool CellularAutomata::in_bounds(int x, int y) {
+bool CellularAutomata::InBounds(int x, int y) {
 	if (x < 0 || x >(textureWidth - 1) || y < 0 || y >(textureHeight - 1)) return false;
 	return true;
 }
 
-bool CellularAutomata::is_empty(int x, int y) {
-	return (in_bounds(x, y) && worldData.at(compute_idx(x, y)).id == mat_id_empty);
+bool CellularAutomata::IsEmpty(int x, int y) {
+	return (InBounds(x, y) && WorldData.at(ComputeID(x, y)).id == mat_id_empty);
 }
 
-Particle CellularAutomata::get_particle_at(int x, int y) {
-	return worldData.at(compute_idx(x, y));
+Particle CellularAutomata::GetParticleAt(int x, int y) {
+	return WorldData.at(ComputeID(x, y));
 }
 
-bool CellularAutomata::completely_surrounded(int x, int y) {
+bool CellularAutomata::CompletelySurrounded(int x, int y) {
 	// Top
-	if (in_bounds(x, y - 1) && !is_empty(x, y - 1)) {
+	if (InBounds(x, y - 1) && !IsEmpty(x, y - 1)) {
 		return false;
 	}
 	// Bottom
-	if (in_bounds(x, y + 1) && !is_empty(x, y + 1)) {
+	if (InBounds(x, y + 1) && !IsEmpty(x, y + 1)) {
 		return false;
 	}
 	// Left
-	if (in_bounds(x - 1, y) && !is_empty(x - 1, y)) {
+	if (InBounds(x - 1, y) && !IsEmpty(x - 1, y)) {
 		return false;
 	}
 	// Right
-	if (in_bounds(x + 1, y) && !is_empty(x + 1, y)) {
+	if (InBounds(x + 1, y) && !IsEmpty(x + 1, y)) {
 		return false;
 	}
 	// Top Left
-	if (in_bounds(x - 1, y - 1) && !is_empty(x - 1, y - 1)) {
+	if (InBounds(x - 1, y - 1) && !IsEmpty(x - 1, y - 1)) {
 		return false;
 	}
 	// Top Right
-	if (in_bounds(x + 1, y - 1) && !is_empty(x + 1, y - 1)) {
+	if (InBounds(x + 1, y - 1) && !IsEmpty(x + 1, y - 1)) {
 		return false;
 	}
 	// Bottom Left
-	if (in_bounds(x - 1, y + 1) && !is_empty(x - 1, y + 1)) {
+	if (InBounds(x - 1, y + 1) && !IsEmpty(x - 1, y + 1)) {
 		return false;
 	}
 	// Bottom Right
-	if (in_bounds(x + 1, y + 1) && !is_empty(x + 1, y + 1)) {
+	if (InBounds(x + 1, y + 1) && !IsEmpty(x + 1, y + 1)) {
 		return false;
 	}
 
 	return true;
 }
 
-bool CellularAutomata::is_in_water(int x, int y, int* lx, int* ly) {
-	if (in_bounds(x, y) && (get_particle_at(x, y).id == mat_id_water)) {
+bool CellularAutomata::IsInWater(int x, int y, int* lx, int* ly) {
+	if (InBounds(x, y) && (GetParticleAt(x, y).id == mat_id_water)) {
 		*lx = x; *ly = y;
 		return true;
 	}
-	if (in_bounds(x, y - 1) && (get_particle_at(x, y - 1).id == mat_id_water)) {
+	if (InBounds(x, y - 1) && (GetParticleAt(x, y - 1).id == mat_id_water)) {
 		*lx = x; *ly = y - 1;
 		return true;
 	}
-	if (in_bounds(x, y + 1) && (get_particle_at(x, y + 1).id == mat_id_water)) {
+	if (InBounds(x, y + 1) && (GetParticleAt(x, y + 1).id == mat_id_water)) {
 		*lx = x; *ly = y + 1;
 		return true;
 	}
-	if (in_bounds(x - 1, y) && (get_particle_at(x - 1, y).id == mat_id_water)) {
+	if (InBounds(x - 1, y) && (GetParticleAt(x - 1, y).id == mat_id_water)) {
 		*lx = x - 1; *ly = y;
 		return true;
 	}
-	if (in_bounds(x - 1, y - 1) && (get_particle_at(x - 1, y - 1).id == mat_id_water)) {
+	if (InBounds(x - 1, y - 1) && (GetParticleAt(x - 1, y - 1).id == mat_id_water)) {
 		*lx = x - 1; *ly = y - 1;
 		return true;
 	}
-	if (in_bounds(x - 1, y + 1) && (get_particle_at(x - 1, y + 1).id == mat_id_water)) {
+	if (InBounds(x - 1, y + 1) && (GetParticleAt(x - 1, y + 1).id == mat_id_water)) {
 		*lx = x - 1; *ly = y + 1;
 		return true;
 	}
-	if (in_bounds(x + 1, y) && (get_particle_at(x + 1, y).id == mat_id_water)) {
+	if (InBounds(x + 1, y) && (GetParticleAt(x + 1, y).id == mat_id_water)) {
 		*lx = x + 1; *ly = y;
 		return true;
 	}
-	if (in_bounds(x + 1, y - 1) && (get_particle_at(x + 1, y - 1).id == mat_id_water)) {
+	if (InBounds(x + 1, y - 1) && (GetParticleAt(x + 1, y - 1).id == mat_id_water)) {
 		*lx = x + 1; *ly = y - 1;
 		return true;
 	}
-	if (in_bounds(x + 1, y + 1) && (get_particle_at(x + 1, y + 1).id == mat_id_water)) {
+	if (InBounds(x + 1, y + 1) && (GetParticleAt(x + 1, y + 1).id == mat_id_water)) {
 		*lx = x + 1; *ly = y + 1;
 		return true;
 	}
 	return false;
 }
 
-void CellularAutomata::putpixel(int x, int y) {
-
-}
-
-void CellularAutomata::drawCircle(int xc, int yc, int x, int y) {
-	// draw a circle around mouse that indicates where particles will spawn
-}
-
-void CellularAutomata::circleBres(int xc, int yc, int r) {
-
-}
-
-float CellularAutomata::vectorDistance(Vector2 vec1, Vector2 vec2) {
+inline float CellularAutomata::VectorDistance(Vector2 vec1, Vector2 vec2) {
 	float dx = (vec1.x - vec2.x);
 	float dy = (vec1.y - vec2.y);
 	return (std::sqrt(dx * dx + dy * dy));
@@ -1432,9 +1406,9 @@ void CellularAutomata::UploadToTexture()
 		&textureDesc,
 		D3D12_RESOURCE_STATE_COPY_DEST,
 		nullptr,
-		IID_PPV_ARGS(&mTexture)));
+		IID_PPV_ARGS(&mTexture[mFrameIndex])));
 
-	const UINT64 uploadBufferSize = GetRequiredIntermediateSize(mTexture.Get(), 0, 1);
+	const UINT64 uploadBufferSize = GetRequiredIntermediateSize(mTexture[mFrameIndex].Get(), 0, 1);
 
 	// Create the GPU upload buffer.
 	ThrowIfFailed(md3dDevice->CreateCommittedResource(
@@ -1446,12 +1420,12 @@ void CellularAutomata::UploadToTexture()
 		IID_PPV_ARGS(&textureUploadHeap)));
 
 	D3D12_SUBRESOURCE_DATA textureData = {};
-	textureData.pData = colorData.data();
+	textureData.pData = ColorData.data();
 	textureData.RowPitch = textureWidth * (sizeof(Color32));
 	textureData.SlicePitch = textureData.RowPitch * textureHeight;
 
-	UpdateSubresources(mCommandList.Get(), mTexture.Get(), textureUploadHeap.Get(), 0, 0, 1, &textureData);
-	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+	UpdateSubresources(mCommandList.Get(), mTexture[mFrameIndex].Get(), textureUploadHeap.Get(), 0, 0, 1, &textureData);
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mTexture[mFrameIndex].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
 
 	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
 	srvHeapDesc.NumDescriptors = 1;
@@ -1465,5 +1439,5 @@ void CellularAutomata::UploadToTexture()
 	srvDesc.Format = textureDesc.Format;
 	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 	srvDesc.Texture2D.MipLevels = 1;
-	md3dDevice->CreateShaderResourceView(mTexture.Get(), &srvDesc, mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
+	md3dDevice->CreateShaderResourceView(mTexture[mFrameIndex].Get(), &srvDesc, mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
 }

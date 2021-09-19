@@ -149,6 +149,24 @@ bool D3DApp::Initialize()
     // Do the initial resize code.
     OnResize();
 
+	// Create synchronization objects and wait until assets have been uploaded to the GPU.
+	{
+		ThrowIfFailed(md3dDevice->CreateFence(mFenceValues[mFrameIndex], D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&mFence)));
+		mFenceValues[mFrameIndex]++;
+
+		// Create an event handle to use for frame synchronization.
+		mFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+		if (mFenceEvent == nullptr)
+		{
+			ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
+		}
+
+		// Wait for the command list to execute; we are reusing the same command 
+		// list in our main loop but for now, we just want to wait for setup to 
+		// complete before continuing.
+		FlushCommandQueue();
+	}
+
 	return true;
 }
  
@@ -181,7 +199,7 @@ void D3DApp::OnResize()
 	// Flush before changing any resources.
 	FlushCommandQueue();
 
-    ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
+    ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc[mFrameIndex].Get(), nullptr));
 
 	// Release the previous resources we will be recreating.
 	for (int i = 0; i < SwapChainBufferCount; ++i)
@@ -271,7 +289,6 @@ void D3DApp::OnResize()
  
 LRESULT D3DApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-	std::wstring text = L"\n LMB pressed.";
 	switch( msg )
 	{
 	// WM_ACTIVATE is sent when the window is activated or deactivated.  
@@ -384,7 +401,6 @@ LRESULT D3DApp::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	case WM_MBUTTONDOWN:
 	case WM_RBUTTONDOWN:
 		SetCapture(mhMainWnd);
-		OutputDebugString(text.c_str());
 		OnMouseDown(wParam, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
 		return 0;
 	case WM_LBUTTONUP:
@@ -522,14 +538,16 @@ void D3DApp::CreateCommandObjects()
 	queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
 	ThrowIfFailed(md3dDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&mCommandQueue)));
 
-	ThrowIfFailed(md3dDevice->CreateCommandAllocator(
-		D3D12_COMMAND_LIST_TYPE_DIRECT,
-		IID_PPV_ARGS(mDirectCmdListAlloc.GetAddressOf())));
+	for (UINT n = 0; n < SwapChainBufferCount; n++) {
+		ThrowIfFailed(md3dDevice->CreateCommandAllocator(
+			D3D12_COMMAND_LIST_TYPE_DIRECT,
+			IID_PPV_ARGS(mDirectCmdListAlloc[n].GetAddressOf())));
+	}
 
 	ThrowIfFailed(md3dDevice->CreateCommandList(
 		0,
 		D3D12_COMMAND_LIST_TYPE_DIRECT,
-		mDirectCmdListAlloc.Get(), // Associated command allocator
+		mDirectCmdListAlloc[mFrameIndex].Get(), // Associated command allocator
 		nullptr,                   // Initial PipelineStateObject
 		IID_PPV_ARGS(mCommandList.GetAddressOf())));
 
@@ -570,26 +588,35 @@ void D3DApp::CreateSwapChain()
 
 void D3DApp::FlushCommandQueue()
 {
-	// Advance the fence value to mark commands up to this fence point.
-    mCurrentFence++;
+	// Schedule a Signal command in the queue.
+	ThrowIfFailed(mCommandQueue->Signal(mFence.Get(), mFenceValues[mFrameIndex]));
 
-    // Add an instruction to the command queue to set a new fence point.  Because we 
-	// are on the GPU timeline, the new fence point won't be set until the GPU finishes
-	// processing all the commands prior to this Signal().
-    ThrowIfFailed(mCommandQueue->Signal(mFence.Get(), mCurrentFence));
+	// Wait until the fence has been processed.
+	ThrowIfFailed(mFence->SetEventOnCompletion(mFenceValues[mFrameIndex], mFenceEvent));
+	WaitForSingleObjectEx(mFenceEvent, INFINITE, FALSE);
 
-	// Wait until the GPU has completed commands up to this fence point.
-    if(mFence->GetCompletedValue() < mCurrentFence)
+	// Increment the fence value for the current frame.
+	mFenceValues[mFrameIndex]++;
+}
+
+void D3DApp::MoveToNextFrame()
+{
+	// Schedule a Signal command in the queue.
+	const UINT64 currentFenceValue = mFenceValues[mFrameIndex];
+	ThrowIfFailed(mCommandQueue->Signal(mFence.Get(), currentFenceValue));
+
+	// Update the frame index.
+	mFrameIndex = mCurrBackBuffer;
+
+	// If the next frame is not ready to be rendered yet, wait until it is ready.
+	if (mFence->GetCompletedValue() < mFenceValues[mFrameIndex])
 	{
-		HANDLE eventHandle = CreateEventEx(nullptr, false, false, EVENT_ALL_ACCESS);
-
-        // Fire event when GPU hits current fence.  
-        ThrowIfFailed(mFence->SetEventOnCompletion(mCurrentFence, eventHandle));
-
-        // Wait until the GPU hits current fence event is fired.
-		WaitForSingleObject(eventHandle, INFINITE);
-        CloseHandle(eventHandle);
+		ThrowIfFailed(mFence->SetEventOnCompletion(mFenceValues[mFrameIndex], mFenceEvent));
+		WaitForSingleObjectEx(mFenceEvent, INFINITE, FALSE);
 	}
+
+	// Set the fence value for the next frame.
+	mFenceValues[mFrameIndex] = currentFenceValue + 1;
 }
 
 ID3D12Resource* D3DApp::CurrentBackBuffer()const
